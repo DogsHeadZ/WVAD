@@ -3,6 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
+from model.Fusion import Fusion
 
 def get_padding_shape(filter_shape, stride, mod=0):
     """Fetch a tuple describing the input padding shape.
@@ -400,15 +401,170 @@ class I3D_Base(nn.Module):
     def forward(self,x_rgb, x_flow):
 
         rgb_feat_map, rgb_feat_map_4f = self.rgb_backbone(x_rgb)
-        flow_feat_map, flow_feat_map_4f = self.flow_backbone(x_flow)
+        # flow_feat_map, flow_feat_map_4f = self.flow_backbone(x_flow)
 
         rgb_feat=self.rgb_GAP(rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
         rgb_logits=self.Softmax(self.Regressor(rgb_feat))
 
-        flow_feat = self.flow_GAP(flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
-        flow_logits = self.Softmax(self.Regressor(flow_feat))
-
-        out_logits = rgb_logits + flow_logits
-        out_logits = self.Softmax(out_logits)
+        # flow_feat = self.flow_GAP(flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        # flow_logits = self.Softmax(self.Regressor(flow_feat))
+        #
+        # out_logits = rgb_logits + flow_logits
+        # out_logits = self.Softmax(out_logits)
 
         return rgb_logits
+
+
+class I3D_Co(nn.Module):
+
+    def __init__(self,dropout_rate,expand_k,freeze_bn=False,freeze_backbone=False,freeze_blocks=None,freeze_bn_statics=False,
+                 pretrained_backbone=False,rgb_model_path=None,flow_model_path=None):
+        super(I3D_Co, self).__init__()
+        self.rgb_backbone=I3D(modality='rgb')
+        self.flow_backbone=I3D(modality='flow')
+        self.pl_generator = nn.Sequential(nn.Dropout(dropout_rate),nn.Linear(1024,2))
+        self.classifier = nn.Sequential(nn.Dropout(dropout_rate),nn.Linear(1024,2))
+        self.Softmax = nn.Softmax(dim=-1)
+
+        self.freeze_bn=freeze_bn
+        self.freeze_backbone=freeze_backbone
+        self.freeze_bn_statics = freeze_bn_statics
+
+        self.rgb_GAP=nn.AdaptiveAvgPool3d(1)
+        self.flow_GAP=nn.AdaptiveAvgPool3d(1)
+
+        self.fusion = Fusion()
+
+        if freeze_blocks==None:
+            self.freeze_blocks=['conv3d_1a_7x7','conv3d_2b_1x1','conv3d_2c_3x3','mixed_3b','mixed_3c','mixed_4b',
+                                'mixed_4c','mixed_4d','mixed_4e','mixed_4f','mixed_5b','mixed_5c']
+        else:
+            self.freeze_blocks=freeze_blocks
+
+        if pretrained_backbone and rgb_model_path!=None and flow_model_path!=None:
+            self.load_part_model(rgb_model_path, flow_model_path)
+
+    def load_part_model(self, rgb_model_path, flow_model_path):
+        rgb_dict=torch.load(rgb_model_path)
+        rgb_state_dict=self.rgb_backbone.state_dict()
+        rgb_new_dict={k:v for k,v in rgb_dict.items() if k in rgb_state_dict.keys()}
+        rgb_state_dict.update(rgb_new_dict)
+        self.rgb_backbone.load_state_dict(rgb_state_dict)
+
+        flow_dict = torch.load(flow_model_path)
+        flow_state_dict = self.flow_backbone.state_dict()
+        flow_new_dict = {k: v for k, v in flow_dict.items() if k in flow_state_dict.keys()}
+        flow_state_dict.update(flow_new_dict)
+        self.flow_backbone.load_state_dict(flow_state_dict)
+
+    def freeze_part_model(self):
+        if self.freeze_backbone:
+            for name,p in self.rgb_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad=False
+            for name,p in self.flow_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad=False
+
+        else:
+            for name,p in self.rgb_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad=True
+            for name,p in self.flow_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad=True
+
+    def freeze_batch_norm(self):
+        if self.freeze_bn:
+            for name, module in self.rgb_backbone.named_modules():
+                if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:    # 这个地方有点问题，之后解冻的时候这里没改成False，已改
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad=False
+                        module.bias.requires_grad=False
+
+            for name, module in self.flow_backbone.named_modules():
+                if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:    # 这个地方有点问题，之后解冻的时候这里没改成False，已改
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad=False
+                        module.bias.requires_grad=False
+
+        else:
+            for name, module in self.rgb_backbone.named_modules():
+                if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad=True
+                        module.bias.requires_grad=True
+
+            for name, module in self.flow_backbone.named_modules():
+                if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad=True
+                        module.bias.requires_grad=True
+
+    def train(self,mode=True):
+        super(I3D_Co, self).train(mode)
+        if self.freeze_backbone:
+            self.freeze_part_model()
+        if self.freeze_bn:
+            self.freeze_batch_norm()
+        return self
+
+    def forward(self,ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow):
+
+        ref_rgb_feat_map, ref_rgb_feat_map_4f = self.rgb_backbone(ref_rgb)
+        ref_rgb_feat = self.rgb_GAP(ref_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        ref_flow_feat_map, ref_flow_feat_map_4f = self.flow_backbone(ref_flow)
+        ref_flow_feat = self.flow_GAP(ref_flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+
+        nor_rgb_feat_map, nor_rgb_feat_map_4f = self.rgb_backbone(normal_rgb)
+        nor_rgb_feat = self.rgb_GAP(nor_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        nor_flow_feat_map, nor_flow_feat_map_4f = self.flow_backbone(normal_flow)
+        nor_flow_feat = self.flow_GAP(nor_flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+
+        abn_rgb_feat_map, abn_rgb_feat_map_4f = self.rgb_backbone(abnormal_rgb)
+        abn_rgb_feat = self.rgb_GAP(abn_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        abn_flow_feat_map, abn_flow_feat_map_4f = self.flow_backbone(abnormal_flow)
+        abn_flow_feat = self.flow_GAP(abn_flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        abn_score=self.Softmax(self.pl_generator(ref_rgb_feat))[1]
+
+        topK = 3
+        threshold_nor = 0.2
+        abn_score_nor_idx = torch.where(abn_score < threshold_nor)
+        abn_score_nor = abn_score[abn_score_nor_idx]
+        abn_rgb_feat_nor = abn_rgb_feat[abn_score_nor_idx]
+        abn_flow_feat_nor = abn_flow_feat[abn_score_nor_idx]
+        # if len(abn_score_nor) > topK:
+        #     abn_score_nor, abn_k_idx = torch.topk(abn_score_nor, topK, dim=0, largest=False)
+        #     abn_rgb_feat_nor = abn_rgb_feat_nor[abn_k_idx]
+
+        threshold_abn = 0.8
+        abn_score_abn_idx = torch.where(abn_score > threshold_abn)
+        abn_rgb_feat_abn = abn_rgb_feat[abn_score_abn_idx]
+
+        nor_rgb_feat = torch.cat([nor_rgb_feat, abn_rgb_feat_nor], dim=0)
+        nor_flow_feat = torch.cat([nor_flow_feat, abn_flow_feat_nor], dim=0)
+
+        fusion_feat_nor = self.fusion(ref_rgb_feat, ref_flow_feat, nor_rgb_feat, nor_flow_feat)  #todo
+        attn_feat_nor = self.attention(fusion_feat_nor)  #todo
+        attn_feat_abn = self.attention(abn_rgb_feat_abn)
+        xxx = self.momery(attn_feat_nor)  #todo
+
+        scores = self.Softmax(self.classifier(attn_feat_nor))
+
+        return scores, attn_feat_nor, attn_feat_abn

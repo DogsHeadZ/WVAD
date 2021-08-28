@@ -7,6 +7,7 @@ import h5py
 import cv2
 import os
 from train_utils import random_perturb
+import time
 
 Abnormal_type=['Abuse','Arrest','Arson','Assault','Burglary',
                'Explosion','Fighting','RoadAccidents','Robbery',
@@ -178,7 +179,6 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
     def __len__(self):
         return len(self.selected_keys)
 
-
     def test_dict_annotation(self):
         self.annotation_dict = {}
         self.keys=[]
@@ -190,11 +190,11 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
                 label='Abnormal'
                 anno = np.load(os.path.join(self.test_mask_dir, key + '.npy'))#[
                        #:frames_num - frames_num % self.segment_len]
-            else:
-                label='Normal'
-                anno=np.zeros(len(anno)-len(anno) % self.segment_len,dtype=np.uint8)
+            # else:
+            #     label='Normal'
+            #     anno=np.zeros(len(anno)-len(anno) % self.segment_len,dtype=np.uint8)
 
-            self.annotation_dict[key]=[anno,label]
+                self.annotation_dict[key]=[anno,label]
         # key_dict={}
         for key in keys:
             if key.split('-')[0] in self.annotation_dict.keys():
@@ -248,7 +248,7 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
 
     def __getitem__(self, i):
         # output format [N,C,T,H,W], [N,2]
-
+        # databegin = time.time()
         key = self.selected_keys[i]
         scores = self.pseudo_labels[key + '.npy']
 
@@ -278,13 +278,15 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
                 for j in range(2):
                     frames.extend(rgb_h5[key+'-{0:06d}'.format(chosen+j)][:])
                     flows.extend(flow_h5[key+'-{0:06d}'.format(chosen+j)][:])
+                # processbegin = time.time()
 
                 frames=frames[begin:begin+self.segment_len]   # tensor[16,224,224,3]
                 frames = self.frame_processing(frames)     #[10*tensor[3,16,224,224]
 
                 flows = flows[begin:begin + self.segment_len]
                 flows = self.flow_processing(flows)
-
+                # processend = time.time()
+                # print('process take time {}'.format(processend - processbegin))
                 if self.ten_crop:
                     frames = torch.stack(frames)
 
@@ -322,7 +324,8 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
 
         rgb_clips=torch.stack(rgb_clips)
         flow_clips=torch.stack(flow_clips)
-        # return rgb_clips, np.array(labels)
+        # dataend = time.time()
+        # print('take time {}'.format(dataend-databegin))
 
         return rgb_clips, flow_clips, np.array(labels)
 

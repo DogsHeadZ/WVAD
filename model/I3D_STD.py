@@ -3,7 +3,6 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
-from model.Attention import Self_Guided_Attention_Branch_Module
 
 def get_padding_shape(filter_shape, stride, mod=0):
     """Fetch a tuple describing the input padding shape.
@@ -304,7 +303,6 @@ class I3D_SGA_STD(nn.Module):
         self.backbone=I3D()
         # self.Conv_Atten=Self_Inc_Guided_Attention(832,expand_k,out_t_channels=2)
         # self.Conv_Atten=Self_Guided_Attention(832,expand_k,out_t_channels=2)
-        self.Conv_Atten=Self_Guided_Attention_Branch_Module(832,expand_k,out_t_channels=2)
 
         self.Regressor=nn.Sequential(nn.Dropout(dropout_rate),nn.Linear(1024,2))
         self.Softmax=nn.Softmax(dim=-1)
@@ -398,7 +396,6 @@ class I3D_Base(nn.Module):
         self.backbone=I3D()
         # self.Conv_Atten=Self_Inc_Guided_Attention(832,expand_k,out_t_channels=2)
         # self.Conv_Atten=Self_Guided_Attention(832,expand_k,out_t_channels=2)
-        self.Conv_Atten=Self_Guided_Attention_Branch_Module(832,expand_k,out_t_channels=2)
 
         self.Regressor=nn.Sequential(nn.Dropout(dropout_rate),nn.Linear(1024,2))
         self.Softmax=nn.Softmax(dim=-1)

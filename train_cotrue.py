@@ -66,15 +66,15 @@ def train(config):
                                                   segment_len=config['segment_len'], type='Abnormal', ten_crop=config['ten_crop'], hard_label=True)
 
     norm_dataloader = DataLoader(norm_dataset, batch_size=config['batch_size'], shuffle=True,
-                                 num_workers=5, worker_init_fn=worker_init, drop_last=True)
+                                 num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
     abnorm_dataloader = DataLoader(abnorm_dataset, batch_size=config['batch_size'], shuffle=True,
-                                   num_workers=5, worker_init_fn=worker_init, drop_last=True)
+                                   num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
 
     # test
     test_dataset = Test_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['test_split'],
                                         config['test_mask_dir'], segment_len=config['segment_len'], ten_crop=config['ten_crop'])
     test_dataloader = DataLoader(test_dataset, batch_size=config['test_batch_size'], shuffle=False,
-                                 num_workers=10, worker_init_fn=worker_init, drop_last=False, )
+                                 num_workers=10, worker_init_fn=worker_init, drop_last=False, pin_memory=True)
 
 
     #### Model setting ####
@@ -114,6 +114,7 @@ def train(config):
     test_epoch = 10 if config['eval_epoch'] is None else config['eval_epoch']
     AUCs,tious,best_epoch,best_tiou_epoch,best_tiou,best_AUC=[],[],0,0,0,0
     # auc = eval_epoch(config, model, test_dataloader)
+    abnorm_iter = iter(abnorm_dataloader)
 
     for epoch in range(config['epochs']):
 
@@ -125,9 +126,15 @@ def train(config):
             model.module.freeze_batch_norm()
 
         Errs, Atten_Errs, Rmses = AverageMeter(), AverageMeter(), AverageMeter()
-        for step, ((norm_frames, norm_flows, norm_labels), (abnorm_frames, abnorm_flows, abnorm_labels)) in tqdm(enumerate(
-                zip(norm_dataloader, abnorm_dataloader))):
+        for step, (norm_frames, norm_flows, norm_labels) in tqdm(enumerate(norm_dataloader)):
             # [B,N,(10crops),C,T,H,W]  [20,3,(10crops),3,16,224,224] ->[B*N,C,T,W,H]
+
+            try:
+                abnorm_frames, abnorm_flows, abnorm_labels = next(abnorm_iter)
+            except:
+                del abnorm_iter
+                abnorm_iter = iter(abnorm_dataloader)
+                abnorm_frames, abnorm_flows, abnorm_labels = next(abnorm_iter)
 
             frames = torch.cat([norm_frames, abnorm_frames], dim=0).cuda().float()
             flows = torch.cat([norm_flows, abnorm_flows], dim=0).cuda().float()

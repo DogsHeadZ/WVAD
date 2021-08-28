@@ -35,7 +35,7 @@ class_reweights: [0.8,0.65]
 label_smoothing: 0
 lambda_base: 1.0
 lambda_atten: 1.0
-accumulate_step: 3
+accumulate_step: 3   # 3
 grad_clip: 20
 
 # optimizer

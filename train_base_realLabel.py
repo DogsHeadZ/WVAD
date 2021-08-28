@@ -59,13 +59,13 @@ def train(config):
                                                 config['train_split'],
                                                 config['pseudo_labels'], config['clips_num'],
                                                 segment_len=config['segment_len'], type='Normal',
-                                                ten_crop=config['ten_crop'])
+                                                ten_crop=config['ten_crop'], hard_label=True)
 
     abnorm_dataset = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'],
                                                   config['train_split'],
                                                   config['pseudo_labels'], config['clips_num'],
                                                   segment_len=config['segment_len'], type='Abnormal',
-                                                  ten_crop=config['ten_crop'])
+                                                  ten_crop=config['ten_crop'], hard_label=True)
 
     norm_dataloader = DataLoader(norm_dataset, batch_size=config['batch_size'], shuffle=True,
                                  num_workers=5, worker_init_fn=worker_init, drop_last=True, )
@@ -176,7 +176,7 @@ def train(config):
         lr_scheduler.step()
         train_utils.log("epoch {}, lr {}".format(epoch, optimizer.param_groups[0]['lr']))
         train_utils.log('----------------------------------------')
-        if epoch % test_epoch == 0:
+        if epoch % test_epoch == 0 and epoch>20:
 
             auc = eval_epoch(config, model, test_dataloader)
             AUCs.append(auc)

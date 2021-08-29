@@ -3,7 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
-from model.Fusion import Fusion
+from model.modules import Fusion, SA
 
 def get_padding_shape(filter_shape, stride, mod=0):
     """Fetch a tuple describing the input padding shape.
@@ -434,6 +434,7 @@ class I3D_Co(nn.Module):
         self.flow_GAP=nn.AdaptiveAvgPool3d(1)
 
         self.fusion = Fusion()
+        self.SA = SA()
 
         if freeze_blocks==None:
             self.freeze_blocks=['conv3d_1a_7x7','conv3d_2b_1x1','conv3d_2c_3x3','mixed_3b','mixed_3c','mixed_4b',
@@ -525,12 +526,22 @@ class I3D_Co(nn.Module):
             self.freeze_batch_norm()
         return self
 
-    def forward(self,ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow):
+    def forward(self,ref_rgb, ref_flow, ref_label, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow, mode='normal'):
+        # ref_rgb: [B,N,C,T,H,W] N为一个视频内clip的数量，B为batchsize指不同视频的数量
+
+        bs, N, C, T, H, W = ref_rgb.shape
+        ref_rgb = ref_rgb.view([-1, C, T, H, W])
+        ref_flow = ref_flow.view([-1, C, T, H, W])
+        normal_rgb = normal_rgb.view([-1, C, T, H, W])
+        normal_flow = normal_flow.view([-1, C, T, H, W])
+        abnormal_rgb = abnormal_rgb.view([-1, C, T, H, W])
+        abnormal_flow = abnormal_flow.view([-1, C, T, H, W])
 
         ref_rgb_feat_map, ref_rgb_feat_map_4f = self.rgb_backbone(ref_rgb)
-        ref_rgb_feat = self.rgb_GAP(ref_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        ref_rgb_feat = self.rgb_GAP(ref_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)   #[B*N,F]
         ref_flow_feat_map, ref_flow_feat_map_4f = self.flow_backbone(ref_flow)
         ref_flow_feat = self.flow_GAP(ref_flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        ref_score=self.Softmax(self.pl_generator(ref_rgb_feat))[1]
 
         nor_rgb_feat_map, nor_rgb_feat_map_4f = self.rgb_backbone(normal_rgb)
         nor_rgb_feat = self.rgb_GAP(nor_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
@@ -543,28 +554,54 @@ class I3D_Co(nn.Module):
         abn_flow_feat = self.flow_GAP(abn_flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
         abn_score=self.Softmax(self.pl_generator(ref_rgb_feat))[1]
 
-        topK = 3
-        threshold_nor = 0.2
-        abn_score_nor_idx = torch.where(abn_score < threshold_nor)
-        abn_score_nor = abn_score[abn_score_nor_idx]
-        abn_rgb_feat_nor = abn_rgb_feat[abn_score_nor_idx]
-        abn_flow_feat_nor = abn_flow_feat[abn_score_nor_idx]
-        # if len(abn_score_nor) > topK:
-        #     abn_score_nor, abn_k_idx = torch.topk(abn_score_nor, topK, dim=0, largest=False)
-        #     abn_rgb_feat_nor = abn_rgb_feat_nor[abn_k_idx]
+        F = ref_rgb_feat.shape[-1]
+        ref_rgb_feat = ref_rgb_feat.view([bs, N, F])
+        ref_flow_feat = ref_flow_feat.view([bs, N, F])
+        nor_rgb_feat = nor_rgb_feat.view([bs, N, F])
+        nor_flow_feat = nor_flow_feat.view([bs, N, F])
+        abn_rgb_feat = abn_rgb_feat.view([bs, N, F])
+        abn_flow_feat = abn_flow_feat.view([bs, N, F])
 
-        threshold_abn = 0.8
-        abn_score_abn_idx = torch.where(abn_score > threshold_abn)
-        abn_rgb_feat_abn = abn_rgb_feat[abn_score_abn_idx]
+        if mode == 'normal':
+            # 当ref为normal时
+            nor_topK = 1
+            abn_k_idx_nor = torch.topk(abn_score, nor_topK, dim=2, largest=False)[1]
+            abn_k_idx_nor = abn_k_idx_nor.unsqueeze(2).expand([-1, -1, F])
+            abn_rgb_feat_nor = torch.gather(abn_rgb_feat, 1, abn_k_idx_nor)
+            abn_flow_feat_nor = torch.gather(abn_flow_feat, 1, abn_k_idx_nor)
 
-        nor_rgb_feat = torch.cat([nor_rgb_feat, abn_rgb_feat_nor], dim=0)
-        nor_flow_feat = torch.cat([nor_flow_feat, abn_flow_feat_nor], dim=0)
+            abn_topK = 10
+            abn_k_idx_abn = torch.topk(abn_score, abn_topK, dim=2, largest=True)[1]
+            abn_k_idx_abn = abn_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
+            abn_rgb_feat_abn = torch.gather(abn_rgb_feat, 1, abn_k_idx_abn)
+            abn_flow_feat_abn = torch.gather(abn_flow_feat, 1, abn_k_idx_abn)
 
-        fusion_feat_nor = self.fusion(ref_rgb_feat, ref_flow_feat, nor_rgb_feat, nor_flow_feat)  #todo
-        attn_feat_nor = self.attention(fusion_feat_nor)  #todo
-        attn_feat_abn = self.attention(abn_rgb_feat_abn)
-        xxx = self.momery(attn_feat_nor)  #todo
+            nor_rgb_feat = torch.cat([nor_rgb_feat, abn_rgb_feat_nor], dim=1)  # 在视频内部维度上进行拼接
+            nor_flow_feat = torch.cat([nor_flow_feat, abn_flow_feat_nor], dim=1)
 
-        scores = self.Softmax(self.classifier(attn_feat_nor))
+            fusion_feat = self.fusion(ref_rgb_feat, ref_flow_feat, nor_rgb_feat, nor_flow_feat)
+            ref_attn_feat = self.SA(fusion_feat)
+            sup_attn_feat = self.SA(abn_rgb_feat_abn) # for rank loss
+        else:
+            # 当ref为abnormal时
+            ref_topK = 10
+            ref_k_idx_abn = torch.topk(ref_score, ref_topK, dim=2, largest=True)[1]
+            ref_k_idx_abn = ref_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
+            ref_rgb_feat_abn = torch.gather(ref_rgb_feat, 1, ref_k_idx_abn)
+            ref_flow_feat_abn = torch.gather(ref_flow_feat, 1, ref_k_idx_abn)
 
-        return scores, attn_feat_nor, attn_feat_abn
+            abn_topK = 10
+            abn_k_idx_abn = torch.topk(abn_score, abn_topK, dim=2, largest=True)[1]
+            abn_k_idx_abn = abn_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
+            abn_rgb_feat_abn = torch.gather(abn_rgb_feat, 1, abn_k_idx_abn)
+            abn_flow_feat_abn = torch.gather(abn_flow_feat, 1, abn_k_idx_abn)
+
+            fusion_feat_nor = self.fusion(ref_rgb_feat_abn, ref_flow_feat_abn, abn_rgb_feat_abn, abn_flow_feat_abn)
+            ref_attn_feat = self.SA(fusion_feat_nor)
+            sup_attn_feat = self.SA(nor_rgb_feat)  # for rank loss
+
+        xxx = self.momery(ref_attn_feat)  #todo
+
+        scores = self.Softmax(self.classifier(xxx))
+
+        return scores

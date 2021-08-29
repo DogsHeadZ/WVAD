@@ -113,7 +113,7 @@ def train(config):
     iterator = 0
     test_epoch = 10 if config['eval_epoch'] is None else config['eval_epoch']
     AUCs,tious,best_epoch,best_tiou_epoch,best_tiou,best_AUC=[],[],0,0,0,0
-    # auc = eval_epoch(config, model, test_dataloader)
+
     abnorm_iter = iter(abnorm_dataloader)
 
     for epoch in range(config['epochs']):

@@ -77,7 +77,7 @@ def train(config):
 
     ref_dataloader_nor = DataLoader(ref_dataset_nor, batch_size=config['batch_size'], shuffle=True,
                                 num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
-    ref_dataloader_abn = DataLoader(ref_dataset_nor, batch_size=config['batch_size'], shuffle=True,
+    ref_dataloader_abn = DataLoader(ref_dataset_abn, batch_size=config['batch_size'], shuffle=True,
                                  num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
     norm_dataloader = DataLoader(norm_dataset, batch_size=config['batch_size'], shuffle=True,
                                  num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)

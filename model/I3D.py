@@ -399,7 +399,6 @@ class I3D_Base(nn.Module):
         return self
 
     def forward(self,x_rgb, x_flow):
-
         rgb_feat_map, rgb_feat_map_4f = self.rgb_backbone(x_rgb)
         # flow_feat_map, flow_feat_map_4f = self.flow_backbone(x_flow)
 
@@ -458,6 +457,24 @@ class I3D_Co(nn.Module):
         flow_new_dict = {k: v for k, v in flow_dict.items() if k in flow_state_dict.keys()}
         flow_state_dict.update(flow_new_dict)
         self.flow_backbone.load_state_dict(flow_state_dict)
+
+        # moodel_dict = torch.load(rgb_model_path)['model']
+        # rgb_state_dict = self.rgb_backbone.state_dict()
+        # rgb_new_dict = {k[20:]: v for k, v in moodel_dict.items() if k[20:] in rgb_state_dict.keys()}  #去掉前缀'module.rgb_backbone.'
+        # rgb_state_dict.update(rgb_new_dict)
+        # self.rgb_backbone.load_state_dict(rgb_state_dict)
+        #
+        # flow_state_dict = self.flow_backbone.state_dict()
+        # flow_new_dict = {k[21:]: v for k, v in moodel_dict.items() if k[21:] in flow_state_dict.keys()} #去掉前缀'module.flow_backbone.'
+        # flow_state_dict.update(flow_new_dict)
+        # self.flow_backbone.load_state_dict(flow_state_dict)
+        #
+        # generator_state_dict = self.pl_generator.state_dict()
+        # generator_new_dict = {k[17:]: v for k, v in moodel_dict.items() if k[17:] in flow_state_dict.keys()} #去掉前缀'module.Regressor.'
+        # generator_state_dict.update(generator_new_dict)
+        # self.pl_generator.load_state_dict(generator_state_dict)
+        # self.classifier.load_state_dict(generator_state_dict)
+
 
     def freeze_part_model(self):
         if self.freeze_backbone:

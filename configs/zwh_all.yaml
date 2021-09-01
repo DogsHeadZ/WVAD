@@ -3,7 +3,6 @@ rgb_dataset_path: ../AllDatasets/SHT_Frames.h5
 flow_dataset_path: flow/SHT_Flows.h5
 train_split: data/SH_Train_new.txt
 test_split: data/SH_Test_NEW.txt
-#pseudo_labels: data/SHT_I3D_PLs.npy
 pseudo_labels: data/train_results.npy
 
 test_mask_dir: data/test_frame_mask/
@@ -21,6 +20,7 @@ ten_crop: False
 # model parameters
 pretrained: True
 rgb_pretrained_model_path: pretrained/model_rgb.pth
+#rgb_pretrained_model_path: pretrained/model-AUC-0.97.pth
 flow_pretrained_model_path: pretrained/model_flow.pth
 
 stored_path: stored_models/SHT_I3D_AUC_0.9483.pth

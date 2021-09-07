@@ -399,6 +399,8 @@ class I3D_Base(nn.Module):
         return self
 
     def forward(self,x_rgb, x_flow):
+        # print(x_rgb.shape)
+
         rgb_feat_map, rgb_feat_map_4f = self.rgb_backbone(x_rgb)
         # flow_feat_map, flow_feat_map_4f = self.flow_backbone(x_flow)
 
@@ -545,7 +547,6 @@ class I3D_Co(nn.Module):
         return self
 
     def forward_test(self, ref_rgb):
-
         ref_rgb_feat_map, ref_rgb_feat_map_4f = self.rgb_backbone(ref_rgb)
         ref_rgb_feat = self.rgb_GAP(ref_rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)  # [B,F]
         ref_attn_feat = self.SA(ref_rgb_feat)

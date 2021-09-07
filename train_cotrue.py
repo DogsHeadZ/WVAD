@@ -29,7 +29,6 @@ def eval_epoch(config, model, test_dataloader):
         # [42, 3, 16, 240, 320]
         frames=frames.float().contiguous().view([-1, 3, frames.shape[-3], frames.shape[-2], frames.shape[-1]]).cuda()
         flows=flows.float().contiguous().view([-1, 2, flows.shape[-3], flows.shape[-2], flows.shape[-1]]).cuda()
-
         with torch.no_grad():
             scores = model(frames, flows)
 
@@ -115,7 +114,8 @@ def train(config):
     AUCs,tious,best_epoch,best_tiou_epoch,best_tiou,best_AUC=[],[],0,0,0,0
 
     abnorm_iter = iter(abnorm_dataloader)
-
+    auc = eval_epoch(config, model, test_dataloader)
+    # print(auc)
     for epoch in range(config['epochs']):
 
         if config['freeze_backbone'] and epoch == config['freeze_epochs']:
@@ -149,9 +149,8 @@ def train(config):
             labels = torch.cat([norm_labels, abnorm_labels], dim=0).cuda().float()
             labels = labels.view([-1, 2]).cuda().float()
             labels = labels[:, -1]
-
             scores = model(frames, flows)
-            scores = scores.view([frames.shape[0], 2])[:, -1]
+            scores = scores.view([-1, 2])[:, -1]
             if config['ten_crop']:
                 scores = scores.view([-1, 10]).mean(dim=-1)
 

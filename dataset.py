@@ -32,6 +32,7 @@ class Test_Dataset_SHT_I3D(Dataset):
         self.width=width
 
         self.test_dict_annotation()
+
         if ten_crop:
             self.transforms = transforms.Compose([transforms.Resize([240, 320]),
                                                     transforms.ClipToTensor(div_255=False),

@@ -174,6 +174,26 @@ class Aggregate(nn.Module):
 
             return out
 
+
+class FA(nn.Module):
+    def __init__(self, len_feature):
+        super(FA, self).__init__()
+        bn = nn.BatchNorm1d
+        self.len_feature = len_feature
+
+        self.non_local = NONLocalBlock1D(len_feature, sub_sample=False, bn_layer=True)
+
+
+    def forward(self, x):
+            # x: (B, T, F)
+            out = x.permute(0, 2, 1)    # 做了个转置是为了在时间维度上应用attention
+            out = self.non_local(out)
+            out = out.permute(0, 2, 1)
+            # out: (B, T, F)
+
+            return out
+
+
 class Classifier(nn.Module):
     def __init__(self,feature_dim,dropout_rate=0.7):
         super(Classifier, self).__init__()
@@ -193,7 +213,9 @@ class HardModel(nn.Module):
 
         self.thres = 0.2
 
-        self.Aggregate = Aggregate(len_feature=feature_dim)
+        # self.Aggregate = Aggregate(len_feature=feature_dim)
+        self.Aggregate = FA(len_feature=feature_dim)
+
         self.drop_out = nn.Dropout(0.7)
         self.p_classifier_rgb = Classifier(feature_dim=feature_dim)
         self.p_classifier_flow = Classifier(feature_dim=feature_dim)
@@ -260,7 +282,7 @@ class HardModel(nn.Module):
             abn_rgb_feat_nor = torch.gather(abnormal_rgb, 1, abn_k_idx_nor)
             abn_flow_feat_nor = torch.gather(abnormal_flow, 1, abn_k_idx_nor)
 
-            abn_topK = 8   #挑选出abnormal video中置信度高的x个clip作为abnormal
+            abn_topK = 10   #挑选出abnormal video中置信度高的x个clip作为abnormal
             abn_k_idx_abn = torch.topk(abn_scores_rgb, abn_topK, dim=1, largest=True)[1]
             abn_k_idx_abn = abn_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
             abn_rgb_feat_abn = torch.gather(abnormal_rgb, 1, abn_k_idx_abn)
@@ -320,7 +342,7 @@ class HardModel(nn.Module):
             ref_p_scores_rgb = ref_p_scores_rgb.view(bs, ncrops, -1).mean(1)
             ref_scores = ref_scores.view(-1, ncrops).mean(1)
 
-        return ref_p_scores_rgb, ref_scores
+        return ref_p_scores_rgb, ref_scores, ref_attn_feat, sup_attn_feat
 
 class CoModel(nn.Module):
     def __init__(self, n_features, batch_size):

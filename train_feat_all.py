@@ -68,12 +68,17 @@ class RTFM_loss(torch.nn.Module):
         self.mae_criterion = SigmoidMAELoss()
         self.criterion = torch.nn.BCELoss()
 
-    def forward(self, ref_scores, ref_labels):
+    def forward(self, ref_scores, ref_labels, ref_attn_feat, sup_attn_feat):
+        #ref_scores: [bs, T], ref_labels:[bs, T], ref_attn_feat:[bs*ncrops, T1, F], sup_attn_feat:[bs*ncrops, T2, F]
+        # 这里按照RTFM的方式来写，默认ref_attn_feat是normal的，sup_attn_feat是abnormal的。
 
-        labels = ref_labels.squeeze()
-        scores = ref_scores.squeeze()
-        loss_cls = self.criterion(scores, labels)  # BCE loss in the score space
-        loss_total = loss_cls
+        loss_cls = self.criterion(ref_scores, ref_labels)  # BCE loss in the score space
+        loss_abn = torch.abs(self.margin - torch.norm(torch.mean(sup_attn_feat, dim=1), p=2, dim=1))
+        loss_nor = torch.norm(torch.mean(ref_attn_feat, dim=1), p=2, dim=1)
+
+        loss_um = torch.mean((loss_abn + loss_nor) ** 2)
+
+        loss_total = loss_cls + 0 * loss_um
 
         return loss_total
 
@@ -203,26 +208,22 @@ def train(config):
 
         with torch.set_grad_enabled(True):
             model.train()
-            ref_p_scores, ref_scores = model(ref_rgb_nor, ref_flow_nor, norm_frames, norm_flows, abn_frames, abn_flows)  # b*32  x 2048
+            ref_p_scores, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_nor, ref_flow_nor, norm_frames, norm_flows, abn_frames, abn_flows)  # b*32  x 2048
             loss_criterion = RTFM_loss(0.0001, 100)  # 这里就只用到了topk个帧进行分类损失
             ref_p_labels_nor = torch.zeros_like(ref_p_scores).cuda().float()
             ref_labels_nor = torch.zeros_like(ref_scores).cuda().float()
-            cost = loss_criterion(ref_scores, ref_labels_nor) + loss_criterion(ref_p_scores, ref_p_labels_nor)
-            # cost = loss_criterion(ref_p_scores, ref_p_labels_nor)
-
+            cost = loss_criterion(ref_scores, ref_labels_nor, ref_attn_feat, sup_attn_feat) + loss_criterion(ref_p_scores, ref_p_labels_nor, ref_attn_feat, sup_attn_feat)
             optimizer.zero_grad()
             cost.backward()
             optimizer.step()
 
-            ref_p_scores, ref_scores = model(ref_rgb_abn, ref_flow_abn, norm_frames, norm_flows, abn_frames, abn_flows,mode='abnormal')  # b*32  x 2048
+            ref_p_scores, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_abn, ref_flow_abn, norm_frames, norm_flows, abn_frames, abn_flows,mode='abnormal')  # b*32  x 2048
             loss_criterion = RTFM_loss(0.0001, 100)  # 这里就只用到了topk个帧进行分类损失
             loss_sparse = sparsity(ref_p_scores, config['batch_size'], 8e-3)  # 对T个伪异常帧进行稀疏化，因为这其中含有大量的正常帧
             loss_smooth = smooth(ref_p_scores, 8e-4)
-
             ref_p_labels_abn = torch.ones_like(ref_p_scores).cuda().float()
-
             ref_labels_abn = torch.ones_like(ref_scores).cuda().float()
-            cost = loss_criterion(ref_scores, ref_labels_abn) + loss_criterion(ref_p_scores, ref_p_labels_abn) + loss_smooth + loss_sparse
+            cost = loss_criterion(ref_scores, ref_labels_abn, sup_attn_feat, ref_attn_feat) + loss_criterion(ref_p_scores, ref_p_labels_abn, sup_attn_feat, ref_attn_feat) + loss_smooth + loss_sparse
             # cost = loss_criterion(ref_p_scores, ref_p_labels_abn) + loss_smooth + loss_sparse
 
             optimizer.zero_grad()

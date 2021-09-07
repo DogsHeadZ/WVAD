@@ -26,13 +26,14 @@ class Fusion(nn.Module):
                                  (ref_flow_feat/(torch.norm(ref_flow_feat, p=2, dim=2).unsqueeze(2))).permute(0, 2, 1))  # [B, N2, K1]
         inter_sim = F.softmax(inter_sim, dim=2)
         inter_sim_mean = torch.mean(inter_sim, dim=2)  # [B, N2]
-        inter_topK = 4
+        inter_topK = 8
         # 调出sup中相似性最高的K个样本
         k_idx = torch.topk(inter_sim_mean, inter_topK, dim=1)[1]  # [B, K2]
         k_idx = k_idx.unsqueeze(2).expand([-1, -1, F_len])
         k_sup_rgb_feat = torch.gather(sup_rgb_feat, 1, k_idx)   #[B, K1, F]
 
         fusion_rgb_feat = torch.cat([k_ref_rgb_feat, k_sup_rgb_feat], dim=1) # 在视频内部维度上进行拼接  [B, K1+K2, F]
+        fusion_rgb_feat = k_ref_rgb_feat + k_sup_rgb_feat
 
         return fusion_rgb_feat
 

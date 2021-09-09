@@ -16,75 +16,15 @@ from tensorboardX import SummaryWriter
 from apex import amp
 
 import train_utils
-from train_utils import AverageMeter
-from eval_utils import eval, cal_rmse
 
 from dataset_feat import Dataset_f
 # from dataset import Train_TemAug_Dataset_SHT_I3D, Test_Dataset_SHT_I3D
-from model.model import HardModel
-from losses import Weighted_BCE_Loss
+from model.model_hard import HardModel
+from losses import RTFM_loss, sparsity, smooth
 from balanced_dataparallel import BalancedDataParallel
 
 
-def save_best_record(test_info, file_path):
-    fo = open(file_path, "w")
-    fo.write("epoch: {}\n".format(test_info["epoch"][-1]))
-    fo.write(str(test_info["test_AUC"][-1]))
-    fo.close()
-
-
-def sparsity(arr, batch_size, lamda2):
-    loss = torch.mean(torch.norm(arr, dim=0))
-    return lamda2*loss
-
-
-def smooth(arr, lamda1):
-    arr2 = torch.zeros_like(arr)
-    arr2[:-1] = arr[1:]
-    arr2[-1] = arr[-1]
-
-    loss = torch.sum((arr2-arr)**2)
-
-    return lamda1*loss
-
-
-class SigmoidMAELoss(torch.nn.Module):
-    def __init__(self):
-        super(SigmoidMAELoss, self).__init__()
-        from torch.nn import Sigmoid
-        self.__sigmoid__ = Sigmoid()
-        self.__l1_loss__ = MSELoss()
-
-    def forward(self, pred, target):
-        return self.__l1_loss__(pred, target)
-
-
-class RTFM_loss(torch.nn.Module):
-    def __init__(self, alpha, margin):
-        super(RTFM_loss, self).__init__()
-        self.alpha = alpha
-        self.margin = margin
-        self.sigmoid = torch.nn.Sigmoid()
-        self.mae_criterion = SigmoidMAELoss()
-        self.criterion = torch.nn.BCELoss()
-
-    def forward(self, ref_scores, ref_labels, ref_attn_feat, sup_attn_feat):
-        #ref_scores: [bs, T], ref_labels:[bs, T], ref_attn_feat:[bs*ncrops, T1, F], sup_attn_feat:[bs*ncrops, T2, F]
-        # 这里按照RTFM的方式来写，默认ref_attn_feat是normal的，sup_attn_feat是abnormal的。
-        eps = 1e-8
-        loss_cls = self.criterion(ref_scores+eps, ref_labels)  # BCE loss in the score space
-        # loss_abn = torch.abs(self.margin - torch.norm(torch.mean(sup_attn_feat, dim=1), p=2, dim=1))
-        # loss_nor = torch.norm(torch.mean(ref_attn_feat, dim=1), p=2, dim=1)
-        #
-        # loss_um = torch.mean((loss_abn + loss_nor) ** 2)
-
-        loss_total = loss_cls
-
-        return loss_total
-
-
 def eval_epoch(model, test_dataloader):
-
 
     with torch.no_grad():
         model.eval()
@@ -208,23 +148,29 @@ def train(config):
 
         with torch.set_grad_enabled(True):
             model.train()
-            ref_p_scores, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_nor, ref_flow_nor, norm_frames, norm_flows, abn_frames, abn_flows)  # b*32  x 2048
+            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_nor, ref_flow_nor, norm_frames, norm_flows, abn_frames, abn_flows)  # b*32  x 2048
             loss_criterion = RTFM_loss(0.0001, 100)  # 这里就只用到了topk个帧进行分类损失
-            ref_p_labels_nor = torch.zeros_like(ref_p_scores).cuda().float()
+            ref_p_labels_nor_rgb = torch.zeros_like(ref_p_scores_rgb).cuda().float()
+            ref_p_labels_nor_flow = torch.zeros_like(ref_p_scores_flow).cuda().float()
             ref_labels_nor = torch.zeros_like(ref_scores).cuda().float()
-            cost1 = loss_criterion(ref_scores, ref_labels_nor, ref_attn_feat, sup_attn_feat) + loss_criterion(ref_p_scores, ref_p_labels_nor, ref_attn_feat, sup_attn_feat)
+            cost1 = loss_criterion(ref_scores, ref_labels_nor, ref_attn_feat, sup_attn_feat) + \
+                    loss_criterion(ref_p_scores_rgb, ref_p_labels_nor_rgb, ref_attn_feat, sup_attn_feat) + \
+                    loss_criterion(ref_p_scores_flow, ref_p_labels_nor_flow, ref_attn_feat, sup_attn_feat)
             optimizer.zero_grad()
             cost1.backward()
             optimizer.step()
 
-            ref_p_scores, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_abn, ref_flow_abn, norm_frames, norm_flows, abn_frames, abn_flows,mode='abnormal')  # b*32  x 2048
+            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_abn, ref_flow_abn, norm_frames, norm_flows, abn_frames, abn_flows,mode='abnormal')  # b*32  x 2048
             loss_criterion = RTFM_loss(0.0001, 100)  # 这里就只用到了topk个帧进行分类损失
-            loss_sparse = sparsity(ref_p_scores, config['batch_size'], 8e-3)  # 对T个伪异常帧进行稀疏化，因为这其中含有大量的正常帧
-            loss_smooth = smooth(ref_p_scores, 8e-4)
-            ref_p_labels_abn = torch.ones_like(ref_p_scores).cuda().float()
+            loss_sparse = sparsity(ref_p_scores_rgb, config['batch_size'], 8e-3)  # 对T个伪异常帧进行稀疏化，因为这其中含有大量的正常帧
+            loss_smooth = smooth(ref_p_scores_rgb, 8e-4)
+            ref_p_labels_abn_rgb = torch.ones_like(ref_p_scores_rgb).cuda().float()
+            ref_p_labels_abn_flow = torch.ones_like(ref_p_scores_flow).cuda().float()
             ref_labels_abn = torch.ones_like(ref_scores).cuda().float()
-            cost2 = loss_criterion(ref_scores, ref_labels_abn, sup_attn_feat, ref_attn_feat) + loss_criterion(ref_p_scores, ref_p_labels_abn, sup_attn_feat, ref_attn_feat) + loss_smooth + loss_sparse
-            # cost = loss_criterion(ref_p_scores, ref_p_labels_abn) + loss_smooth + loss_sparse
+            cost2 = loss_criterion(ref_scores, ref_labels_abn, ref_attn_feat, sup_attn_feat) + \
+                    loss_criterion(ref_p_scores_rgb, ref_p_labels_abn_rgb, ref_attn_feat, sup_attn_feat) + \
+                    loss_criterion(ref_p_scores_flow, ref_p_labels_abn_flow, ref_attn_feat, sup_attn_feat) + \
+                    loss_smooth + loss_sparse
 
             optimizer.zero_grad()
             cost2.backward()
@@ -242,7 +188,7 @@ def train(config):
                 best_AUC = test_info["test_AUC"][-1]
                 # torch.save(model.state_dict(), './ckpt/' + args.model_name + '{}-i3d.pkl'.format(step))
                 torch.save(model.state_dict(), os.path.join(save_path, 'models/model-step-{}.pth'.format(step)))
-                save_best_record(test_info, os.path.join(save_path, '{}-step-AUC.txt'.format(step)))
+                train_utils.save_best_record(test_info, os.path.join(save_path, '{}-step-AUC.txt'.format(step)))
 
     # torch.save(model.state_dict(), './ckpt/' + args.model_name + 'final.pkl')
     torch.save(model.state_dict(), os.path.join(save_path, 'models/model-final.pth'))

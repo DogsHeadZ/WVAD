@@ -81,6 +81,13 @@ def set_gpu(gpu):
     os.environ['CUDA_VISIBLE_DEVICES'] = gpu
 
 
+def save_best_record(test_info, file_path):
+    fo = open(file_path, "w")
+    fo.write("epoch: {}\n".format(test_info["epoch"][-1]))
+    fo.write(str(test_info["test_AUC"][-1]))
+    fo.close()
+
+
 def set_save_path(path, remove=True):
 
     if os.path.exists(path):

@@ -214,7 +214,7 @@ class HardModel(nn.Module):
         self.thres = 0.2
 
         # self.Aggregate = Aggregate(len_feature=feature_dim)
-        self.Aggregate = FA(len_feature=feature_dim)
+        self.Aggregate = SA(feat_dim=feature_dim)
 
         self.drop_out = nn.Dropout(0.7)
         self.p_classifier_rgb = Classifier(feature_dim=feature_dim)
@@ -238,8 +238,8 @@ class HardModel(nn.Module):
         p_scores_flow = self.p_classifier_flow(inputs_flow).squeeze(2)  # (bs*ncrops, T)
 
         features = inputs_rgb
-        features = self.Aggregate(features)    #attention放在这里精度有明显提升（能达到96.6，2个百分点），但放到后面会起很大的负作用
-        features = self.drop_out(features)  # (bs*ncrops, T, F)
+        # features = self.Aggregate(features)    #attention放在这里精度有明显提升（能达到96.6，2个百分点），但放到后面会起很大的负作用
+        # features = self.drop_out(features)  # (bs*ncrops, T, F)
 
         bs = bs // 3
         if tencrop:
@@ -251,7 +251,7 @@ class HardModel(nn.Module):
                     normal_flow.view(bs*ncrops, T, -1), features[2*bs*ncrops:3*bs*ncrops], abnormal_flow.view(bs*ncrops, T, -1)
 
         if bs == 1:  # this is for inference
-            # ref_rgb = self.Aggregate(ref_rgb)
+            # ref_rgb = self.Aggregate(ref_rgb,ref_rgb)
             # ref_rgb = self.drop_out(ref_rgb)
             ref_scores = self.f_classifier(ref_rgb)
             ref_scores = ref_scores.view(bs, ncrops, -1).mean(1) # 对这个帧的10个crops取平均得到这帧的分数[bs, T]
@@ -335,99 +335,13 @@ class HardModel(nn.Module):
 
         # ref_attn_feat = self.Aggregate(ref_attn_feat)   #放在这里会起负作用
         # ref_attn_feat = self.drop_out(ref_attn_feat)
+        # ref_attn_feat = self.Aggregate(ref_attn_feat[0], ref_attn_feat[1])
 
-        ref_scores = self.f_classifier(ref_attn_feat)
+        ref_scores = self.f_classifier(ref_attn_feat[0])
 
         if tencrop:
             ref_p_scores_rgb = ref_p_scores_rgb.view(bs, ncrops, -1).mean(1)
             ref_scores = ref_scores.view(-1, ncrops).mean(1)
 
         return ref_p_scores_rgb, ref_scores, ref_attn_feat, sup_attn_feat
-
-class CoModel(nn.Module):
-    def __init__(self, n_features, batch_size):
-        super(CoModel, self).__init__()
-        self.batch_size = batch_size
-        self.num_segments = 32
-        self.k_abn = self.num_segments // 10
-        self.k_nor = self.num_segments // 10
-
-        self.Aggregate = Aggregate(len_feature=2048)
-        self.drop_out = nn.Dropout(0.7)
-        self.p_classifier = Classifier(feature_dim=2048)
-        self.f_classifier = Classifier(feature_dim=2048)
-
-        self.fusion = Fusion()
-
-        self.apply(weight_init)
-
-
-    def forward(self, ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow, mode='normal', tencrop=True):
-
-        inputs_rgb = torch.cat((ref_rgb, normal_rgb, abnormal_rgb), 0)
-        bs, ncrops, T, F = inputs_rgb.size()
-        inputs_rgb = inputs_rgb.view(-1, T, F)
-
-        p_scores = self.p_classifier(inputs_rgb).squeeze(2)  # (bs*ncrops, T)
-        features = self.Aggregate(inputs_rgb)
-        features = self.drop_out(features)  # (bs*ncrops, T, F)
-
-        bs = bs // 3
-        if tencrop:
-            ref_p_scores, abn_scores = p_scores[:bs*ncrops], p_scores[2*bs*ncrops:3*bs*ncrops]
-            ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow = \
-                features[:bs*ncrops], ref_flow.view(bs*ncrops, T, -1), features[bs*ncrops:2*bs*ncrops], \
-                    normal_flow.view(bs*ncrops, T, -1), features[2*bs*ncrops:3*bs*ncrops], abnormal_flow.view(bs*ncrops, T, -1)
-
-        if bs == 1:  # this is for inference
-            ref_scores = self.f_classifier(ref_rgb)
-            ref_scores = ref_scores.view(bs, ncrops, -1).mean(1) # 对这个帧的10个crops取平均得到这帧的分数[bs, T]
-            return ref_scores
-
-        if mode == 'normal':
-            # 当ref为normal时
-            nor_topK = 2   #将abnormal video中的x个clip视为normal
-            abn_k_idx_nor = torch.topk(abn_scores, nor_topK, dim=1, largest=False)[1]
-            abn_k_idx_nor = abn_k_idx_nor.unsqueeze(2).expand([-1, -1, F])
-            abn_rgb_feat_nor = torch.gather(abnormal_rgb, 1, abn_k_idx_nor)
-            abn_flow_feat_nor = torch.gather(abnormal_flow, 1, abn_k_idx_nor)
-
-            abn_topK = 8   #挑选出abnormal video中x个clip作为abnormal
-            abn_k_idx_abn = torch.topk(abn_scores, abn_topK, dim=1, largest=True)[1]
-            abn_k_idx_abn = abn_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
-            abn_rgb_feat_abn = torch.gather(abnormal_rgb, 1, abn_k_idx_abn)
-            abn_flow_feat_abn = torch.gather(abnormal_flow, 1, abn_k_idx_abn)
-
-            nor_rgb_feat = torch.cat([normal_rgb, abn_rgb_feat_nor], dim=1)  # 在视频内部维度上进行拼接
-            nor_flow_feat = torch.cat([normal_flow, abn_flow_feat_nor], dim=1)
-
-            fusion_feat = self.fusion(ref_rgb, ref_flow, nor_rgb_feat, nor_flow_feat)
-            ref_attn_feat = fusion_feat
-            sup_attn_feat = abn_rgb_feat_abn # for rank loss
-
-        else:
-            # 当ref为abnormal时
-            ref_topK = 10
-            ref_k_idx_abn = torch.topk(ref_p_scores, ref_topK, dim=1, largest=True)[1]
-            ref_k_idx_abn = ref_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
-            ref_rgb_feat_abn = torch.gather(ref_rgb, 1, ref_k_idx_abn)
-            ref_flow_feat_abn = torch.gather(ref_flow, 1, ref_k_idx_abn)
-
-            abn_topK = 10
-            abn_k_idx_abn = torch.topk(abn_scores, abn_topK, dim=1, largest=True)[1]
-            abn_k_idx_abn = abn_k_idx_abn.unsqueeze(2).expand([-1, -1, F])
-            abn_rgb_feat_abn = torch.gather(abnormal_rgb, 1, abn_k_idx_abn)
-            abn_flow_feat_abn = torch.gather(abnormal_flow, 1, abn_k_idx_abn)
-
-            fusion_feat_nor = self.fusion(ref_rgb_feat_abn, ref_flow_feat_abn, abn_rgb_feat_abn, abn_flow_feat_abn)
-            ref_attn_feat = fusion_feat_nor
-            sup_attn_feat = normal_rgb  # for rank loss
-
-        ref_scores = self.f_classifier(ref_attn_feat)
-
-        if tencrop:
-            ref_p_scores = ref_p_scores.view(bs, ncrops, -1).mean(1)
-            ref_scores = ref_scores.view(-1, ncrops).mean(1)
-
-        return ref_p_scores, ref_scores
 

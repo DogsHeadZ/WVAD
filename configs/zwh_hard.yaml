@@ -18,6 +18,6 @@ batch_size: 32
 optimizer: Adam
 optimizer_args: {lr: 0.001, weight_decay: 0.005, lr_scheduler: None, betas: [0.9, 0.999]}
 
-save_path: ./save/hard/
+save_path: ./save/hard_relation/
 
 

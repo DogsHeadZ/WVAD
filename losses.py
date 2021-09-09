@@ -1,8 +1,58 @@
 import torch
 import torch.nn as nn
+from torch.nn import MSELoss
 from torch.autograd import Variable
 import torch.nn.functional as F
 
+
+def sparsity(arr, batch_size, lamda2):
+    loss = torch.mean(torch.norm(arr, dim=0))
+    return lamda2*loss
+
+
+def smooth(arr, lamda1):
+    arr2 = torch.zeros_like(arr)
+    arr2[:-1] = arr[1:]
+    arr2[-1] = arr[-1]
+
+    loss = torch.sum((arr2-arr)**2)
+
+    return lamda1*loss
+
+
+class SigmoidMAELoss(torch.nn.Module):
+    def __init__(self):
+        super(SigmoidMAELoss, self).__init__()
+        from torch.nn import Sigmoid
+        self.__sigmoid__ = Sigmoid()
+        self.__l1_loss__ = MSELoss()
+
+    def forward(self, pred, target):
+        return self.__l1_loss__(pred, target)
+
+
+class RTFM_loss(torch.nn.Module):
+    def __init__(self, alpha, margin):
+        super(RTFM_loss, self).__init__()
+        self.alpha = alpha
+        self.margin = margin
+        self.sigmoid = torch.nn.Sigmoid()
+        self.mae_criterion = SigmoidMAELoss()
+        self.criterion = torch.nn.BCELoss()
+
+    def forward(self, ref_scores, ref_labels, ref_attn_feat, sup_attn_feat):
+        #ref_scores: [bs, T], ref_labels:[bs, T], ref_attn_feat:[bs*ncrops, T1, F], sup_attn_feat:[bs*ncrops, T2, F]
+        # 这里按照RTFM的方式来写，默认ref_attn_feat是normal的，sup_attn_feat是abnormal的。
+        eps = 1e-8
+        loss_cls = self.criterion(ref_scores+eps, ref_labels)  # BCE loss in the score space
+        # loss_abn = torch.abs(self.margin - torch.norm(torch.mean(sup_attn_feat, dim=1), p=2, dim=1))
+        # loss_nor = torch.norm(torch.mean(ref_attn_feat, dim=1), p=2, dim=1)
+        #
+        # loss_um = torch.mean((loss_abn + loss_nor) ** 2)
+
+        loss_total = loss_cls
+
+        return loss_total
 
 class Weighted_BCE_Loss(nn.Module):
     def __init__(self,weights,label_smoothing=0,eps=1e-8):

@@ -1,7 +1,31 @@
-import time
+# import time
 import torch
-import numpy as np
-import random
+# import numpy as np
+# import random
+from model.modules import Relation
+ralation = Relation(feat_dim=2048)
+input1 = torch.rand([12,2048])
+input2 = torch.rand([10,2048])
+
+out = ralation.attention_module_multi_head(input1, input2)
+print(out.shape)
+
+
+from model.modules import VideoRelation
+vralation = VideoRelation(feat_dim=2048)
+input1 = torch.rand([3,12,2048])
+input2 = torch.rand([3,10,2048])
+
+out = vralation.attention_module_multi_head(input1, input2)
+print(out.shape)
+
+# a = torch.randint(1,10,(2,2,3,2)).float()
+# b = torch.randint(1,10,(2,2,3,2)).float()
+# print(a)
+# print(b)
+# result = torch.matmul(a, b.permute(0, 1,3, 2))
+# print(result)
+
 # begin = time.time()
 # time.sleep(1)
 # end  = time.time()
@@ -105,27 +129,27 @@ import random
 # labels  = np.load('../AllDatasets/ShanghaiTech/test_frame_mask/01_0015.npy')
 # print(labels.shape)
 
-a = torch.randint(1,10,(2,10)).float()
-feat = torch.randint(1,10,(2,10,5)).float()
-print(a)
-b = torch.abs_(a-5)
-print(b)
-topK = 6
-k_idx = torch.topk(b, topK, dim=1)[1]
-ori = torch.gather(a, 1, k_idx)
-print(k_idx)
-print('features:')
-print(feat)
-print('scores:')
-print(ori)
-print('hard features:')
-hard_feat =  torch.gather(feat, 1, k_idx.unsqueeze(2).expand([-1, -1, 5]))
-print(hard_feat)
-
-topK=2
-hard_topK_idx_abn = torch.topk(ori, topK, dim=1)[1]
-hard_topK_feat_abn = torch.gather(hard_feat, 1, hard_topK_idx_abn.unsqueeze(2).expand([-1, -1, 5]))
-print(hard_topK_feat_abn)
+# a = torch.randint(1,10,(2,10)).float()
+# feat = torch.randint(1,10,(2,10,5)).float()
+# print(a)
+# b = torch.abs_(a-5)
+# print(b)
+# topK = 6
+# k_idx = torch.topk(b, topK, dim=1)[1]
+# ori = torch.gather(a, 1, k_idx)
+# print(k_idx)
+# print('features:')
+# print(feat)
+# print('scores:')
+# print(ori)
+# print('hard features:')
+# hard_feat =  torch.gather(feat, 1, k_idx.unsqueeze(2).expand([-1, -1, 5]))
+# print(hard_feat)
+#
+# topK=2
+# hard_topK_idx_abn = torch.topk(ori, topK, dim=1)[1]
+# hard_topK_feat_abn = torch.gather(hard_feat, 1, hard_topK_idx_abn.unsqueeze(2).expand([-1, -1, 5]))
+# print(hard_topK_feat_abn)
 
 # print(torch.gather(hard_feat, 1, normal_idx.unsqueeze(2).expand([-1, -1, 5])))
 # k_idx = k_idx.unsqueeze(2).expand([-1, -1, 5])

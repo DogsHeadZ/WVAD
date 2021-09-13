@@ -2,22 +2,24 @@
 import torch
 # import numpy as np
 # import random
-from model.modules import Relation
-ralation = Relation(feat_dim=2048)
-input1 = torch.rand([12,2048])
-input2 = torch.rand([10,2048])
-
-out = ralation.attention_module_multi_head(input1, input2)
-print(out.shape)
-
-
-from model.modules import VideoRelation
-vralation = VideoRelation(feat_dim=2048)
-input1 = torch.rand([3,12,2048])
-input2 = torch.rand([3,10,2048])
-
-out = vralation.attention_module_multi_head(input1, input2)
-print(out.shape)
+# from model.modules import Relation
+# ralation = Relation(feat_dim=2048)
+# input1 = torch.rand([12,2048])
+# input2 = torch.rand([10,2048])
+#
+# out = ralation.attention_module_multi_head(input1, input2)
+# print(out.shape)
+#
+#
+# from model.modules import VideoRelation
+# vralation = VideoRelation(feat_dim=2048)
+# input1 = torch.rand([3,12,2048])
+# input2 = torch.rand([3,10,2048])
+#
+# out = vralation.attention_module_multi_head(input1, input2)
+# print(out.shape)
+a = torch.randint(1,10,(2,2,3,2)).float()
+print(torch.max(a))
 
 # a = torch.randint(1,10,(2,2,3,2)).float()
 # b = torch.randint(1,10,(2,2,3,2)).float()

@@ -56,7 +56,7 @@ class Hard_sim_sample_generator(nn.Module):
         conf_k_idx = conf_k_idx.unsqueeze(2).expand([-1, -1, F_len])
         conf_k_feat = torch.gather(feat, 1, conf_k_idx)  # [B, K2, F]
 
-        return conf_k_feat, hard_k_feat
+        return hard_k_feat, conf_k_feat
 
 
 def make_fc(dim_in, hidden_dim):
@@ -66,12 +66,13 @@ def make_fc(dim_in, hidden_dim):
     nn.init.constant_(fc.bias, 0)
     return fc
 
+
 class VideoRelation(nn.Module):
     def __init__(self, feat_dim):
         super(VideoRelation, self).__init__()
         fcs, Wqs, Wks, Wvs = [], [], [], []
 
-        layernum = 2
+        self.layernum = 3
         input_size = feat_dim
         representation_size = feat_dim
 
@@ -79,10 +80,10 @@ class VideoRelation(nn.Module):
         self.groups = 16
         self.feat_dim = representation_size
 
-        for i in range(layernum):
+        for i in range(self.layernum):
             r_size = input_size if i == 0 else representation_size
 
-            if i != layernum:
+            if i != self.layernum:
                 fcs.append(make_fc(r_size, representation_size))
             Wqs.append(make_fc(self.feat_dim, self.feat_dim))
             Wks.append(make_fc(self.feat_dim, self.feat_dim))
@@ -149,11 +150,17 @@ class VideoRelation(nn.Module):
 
     def forward(self, ref_feat, sup_feat, index=0):
         # feat: [B, N, F]
-        ref_feat = F.relu(self.fcs[index](ref_feat))
-        sup_feat = F.relu(self.fcs[index](sup_feat))
+        # ref_feat = F.relu(self.fcs[index](ref_feat))
+        # sup_feat = F.relu(self.fcs[0](sup_feat))
+        #
+        # attention = self.attention_module_multi_head(ref_feat, sup_feat, index=index)
+        # ref_feat = ref_feat + attention
 
-        ref_aggr = self.attention_module_multi_head(ref_feat, sup_feat, index=index)
-        ref_feat = ref_feat + ref_aggr
+        sup_feat = F.relu(self.fcs[0](sup_feat))
+        for i in range(1):
+            ref_feat = F.relu(self.fcs[i](ref_feat))
+            attention = self.attention_module_multi_head(ref_feat, sup_feat, index=i)
+            ref_feat = ref_feat + attention
 
         return ref_feat
 

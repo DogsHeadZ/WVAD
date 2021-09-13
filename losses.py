@@ -43,14 +43,13 @@ class RTFM_loss(torch.nn.Module):
     def forward(self, ref_scores, ref_labels, ref_attn_feat, sup_attn_feat):
         #ref_scores: [bs, T], ref_labels:[bs, T], ref_attn_feat:[bs*ncrops, T1, F], sup_attn_feat:[bs*ncrops, T2, F]
         # 这里按照RTFM的方式来写，默认ref_attn_feat是normal的，sup_attn_feat是abnormal的。
-        eps = 1e-8
-        loss_cls = self.criterion(ref_scores+eps, ref_labels)  # BCE loss in the score space
-        # loss_abn = torch.abs(self.margin - torch.norm(torch.mean(sup_attn_feat, dim=1), p=2, dim=1))
-        # loss_nor = torch.norm(torch.mean(ref_attn_feat, dim=1), p=2, dim=1)
-        #
-        # loss_um = torch.mean((loss_abn + loss_nor) ** 2)
 
-        loss_total = loss_cls
+        loss_cls = self.criterion(ref_scores, ref_labels)  # BCE loss in the score space
+        loss_abn = torch.abs(self.margin - torch.norm(torch.mean(sup_attn_feat, dim=1), p=2, dim=1))
+        loss_nor = torch.norm(torch.mean(ref_attn_feat, dim=1), p=2, dim=1)
+
+        loss_um = torch.mean((loss_abn + loss_nor) ** 2)
+        loss_total = loss_cls + self.alpha * loss_um
 
         return loss_total
 

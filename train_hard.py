@@ -91,6 +91,7 @@ def train(config):
     model = HardModel(config['feature_size']).cuda()
 
 
+
     # optimizer setting
     params = list(model.parameters())
     optimizer, lr_scheduler = train_utils.make_optimizer(
@@ -102,15 +103,10 @@ def train(config):
     # amp.register_float_function(torch, 'softmax')
     # amp.register_float_function(torch, 'sigmoid')
     # model, optimizer = amp.initialize(model, optimizer, opt_level=opt_level, keep_batchnorm_fp32=None)
-    # if config['ten_crop']:
-    #     model = BalancedDataParallel(int(config['batch_size'] * 2 * config['clips_num'] * 10 / len(config['gpu']) * config['gpu0sz']), model, dim=0,
-    #                                  device_ids=config['gpu'])
-    # else:
-    #     model = BalancedDataParallel(
-    #                                 int(config['batch_size'] * 2 * config['clips_num'] / len(config['gpu']) * config['gpu0sz']), model, dim=0,
-    #                                 device_ids=config['gpu'])
-    #     # model = torch.nn.parallel.DataParallel(model, dim=0, device_ids=config['gpu'])
 
+    model = torch.nn.parallel.DataParallel(model, dim=0, device_ids=config['gpu'])
+    # state_dict = torch.load('save/hard_relation/_0911_PL/models/model-step-120.pth')
+    # model.load_state_dict(state_dict)
     model = model.train()
     # Training
     train_utils.log('Start train')
@@ -148,39 +144,44 @@ def train(config):
 
         with torch.set_grad_enabled(True):
             model.train()
-            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_nor, ref_flow_nor, norm_frames, norm_flows, abn_frames, abn_flows)  # b*32  x 2048
+            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = \
+                model(ref_rgb_nor, ref_flow_nor, norm_frames, norm_flows, abn_frames, abn_flows)  # b*32  x 2048
             loss_criterion = RTFM_loss(0.0001, 100)  # 这里就只用到了topk个帧进行分类损失
+
             ref_p_labels_nor_rgb = torch.zeros_like(ref_p_scores_rgb).cuda().float()
             ref_p_labels_nor_flow = torch.zeros_like(ref_p_scores_flow).cuda().float()
             ref_labels_nor = torch.zeros_like(ref_scores).cuda().float()
             cost1 = loss_criterion(ref_scores, ref_labels_nor, ref_attn_feat, sup_attn_feat) + \
                     loss_criterion(ref_p_scores_rgb, ref_p_labels_nor_rgb, ref_attn_feat, sup_attn_feat) + \
                     loss_criterion(ref_p_scores_flow, ref_p_labels_nor_flow, ref_attn_feat, sup_attn_feat)
-            optimizer.zero_grad()
-            cost1.backward()
-            optimizer.step()
 
-            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = model(ref_rgb_abn, ref_flow_abn, norm_frames, norm_flows, abn_frames, abn_flows,mode='abnormal')  # b*32  x 2048
+            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = \
+                model(ref_rgb_abn, ref_flow_abn, norm_frames, norm_flows, abn_frames, abn_flows,mode='abnormal')  # b*32  x 2048
             loss_criterion = RTFM_loss(0.0001, 100)  # 这里就只用到了topk个帧进行分类损失
             loss_sparse = sparsity(ref_p_scores_rgb, config['batch_size'], 8e-3)  # 对T个伪异常帧进行稀疏化，因为这其中含有大量的正常帧
             loss_smooth = smooth(ref_p_scores_rgb, 8e-4)
             ref_p_labels_abn_rgb = torch.ones_like(ref_p_scores_rgb).cuda().float()
             ref_p_labels_abn_flow = torch.ones_like(ref_p_scores_flow).cuda().float()
             ref_labels_abn = torch.ones_like(ref_scores).cuda().float()
-            cost2 = loss_criterion(ref_scores, ref_labels_abn, ref_attn_feat, sup_attn_feat) + \
-                    loss_criterion(ref_p_scores_rgb, ref_p_labels_abn_rgb, ref_attn_feat, sup_attn_feat) + \
-                    loss_criterion(ref_p_scores_flow, ref_p_labels_abn_flow, ref_attn_feat, sup_attn_feat) + \
-                    loss_smooth + loss_sparse
 
+            cost2 = loss_criterion(ref_scores, ref_labels_abn, ref_attn_feat, sup_attn_feat) + \
+                    loss_smooth + loss_sparse + \
+                    loss_criterion(ref_p_scores_rgb, ref_p_labels_abn_rgb, ref_attn_feat, sup_attn_feat) + \
+                    loss_criterion(ref_p_scores_flow, ref_p_labels_abn_flow, ref_attn_feat, sup_attn_feat)
+
+
+            cost = cost1 + cost2
             optimizer.zero_grad()
-            cost2.backward()
+            cost.backward()
             optimizer.step()
 
-        if step % test_epoch == 0 and step > 200:
-            print('cost1:')
-            print(cost1)
-            print('cost2:')
-            print(cost2)
+            # with amp.scale_loss(cost, optimizer) as cost:
+            #     optimizer.zero_grad()
+            #     cost.backward()
+            #     optimizer.step()
+
+        if step % test_epoch == 0 and step > 50:
+
             auc = eval_epoch(model, test_dataloader)
             test_info["epoch"].append(step)
             test_info["test_AUC"].append(auc)

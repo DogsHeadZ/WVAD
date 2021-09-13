@@ -27,9 +27,9 @@ class Classifier(nn.Module):
 
 
 class HardModel(nn.Module):
-    def __init__(self, feature_dim):
+    def __init__(self, feature_dim, train_PL=False):
         super(HardModel, self).__init__()
-
+        self.train_PL = train_PL
         self.Aggregate = Aggregate(feat_dim=feature_dim)
         self.drop_out = nn.Dropout(0.7)
 
@@ -40,6 +40,8 @@ class HardModel(nn.Module):
         self.hard_sim_sampler = Hard_sim_sample_generator()
         self.hard_score_sampler = Hard_score_sample_generator()
         self.relation = VideoRelation(feat_dim=feature_dim)
+        self.relation_two = VideoRelation(feat_dim=feature_dim)
+
 
         self.apply(weight_init)
 
@@ -51,9 +53,9 @@ class HardModel(nn.Module):
         bs, ncrops, T, F = inputs_rgb.size()
         inputs_rgb = inputs_rgb.view(-1, T, F)
         inputs_flow = inputs_flow.view(-1, T, F)
-
-        p_scores_rgb = self.p_classifier_rgb(inputs_rgb).squeeze(2)  # (bs*ncrops, T)
-        p_scores_flow = self.p_classifier_flow(inputs_flow).squeeze(2)  # (bs*ncrops, T)
+        with torch.no_grad():
+            p_scores_rgb = self.p_classifier_rgb(inputs_rgb).squeeze(2)  # (bs*ncrops, T)
+            p_scores_flow = self.p_classifier_flow(inputs_flow).squeeze(2)  # (bs*ncrops, T)
 
         features = inputs_rgb
         # features = self.Aggregate(inputs_rgb)    #RTFM的attention放在这里精度有明显提升（能达到96.6，2个百分点），但放到后面会起很大的负作用
@@ -68,9 +70,17 @@ class HardModel(nn.Module):
             features[:bs*ncrops], ref_flow.view(bs*ncrops, T, -1), features[bs*ncrops:2*bs*ncrops], \
                 normal_flow.view(bs*ncrops, T, -1), features[2*bs*ncrops:3*bs*ncrops], abnormal_flow.view(bs*ncrops, T, -1)
 
+        if self.train_PL:
+            ref_p_scores_rgb = ref_p_scores_rgb.view(bs, ncrops, -1).mean(1)
+            ref_p_scores_flow = ref_p_scores_flow.view(bs, ncrops, -1).mean(1)
+            if bs == 1:
+                return ref_p_scores_rgb
+
+            return ref_p_scores_rgb, ref_p_scores_flow
+
         if bs == 1:  # this is for inference
             ref_aggr = self.relation(ref_rgb, ref_rgb, index=0)  # 测试时直接与自身进行融合
-            ref_aggr = self.relation(ref_aggr, ref_aggr, index=1)
+            ref_aggr = self.relation_two(ref_aggr, ref_aggr, index=0)
             ref_scores = self.f_classifier(ref_aggr)
             ref_scores = ref_scores.view(bs, ncrops, -1).mean(1) # 对这个帧的10个crops取平均得到这帧的分数[bs, T]
             return ref_scores
@@ -80,7 +90,7 @@ class HardModel(nn.Module):
             = self.hard_score_sampler(abnormal_rgb, abn_scores_rgb, abn_scores_flow)
 
         # 第一步融合
-        supn_aggr_feat = self.relation(supn_conf_feat, supn_hard_feat, index=0)  #融合困难样本的特征，使得conf样本更具有鲁棒性
+        supn_aggr_feat = self.relation(supn_conf_feat, supn_hard_feat, index=0)  #融合正常视频困难样本的特征，使得conf样本更具有鲁棒性
         supa_aggr_nor_feat = self.relation(supa_conf_nor_feat, supa_hard_nor_feat, index=0)  # 异常视频normal clips融合
         supa_aggr_abn_feat = self.relation(supa_conf_abn_feat, supa_hard_abn_feat, index=0)  # 异常视频abnormal clips融合
 
@@ -89,14 +99,18 @@ class HardModel(nn.Module):
             ref_aggr_feat = self.relation(ref_conf_feat, ref_hard_feat, index=0)
             # 第二步融合
             # 融合不同视频正常clips
-            ref_aggr2_feat = self.relation(ref_aggr_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1), index=1)
+            ref_aggr2_feat = self.relation_two(ref_aggr_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1), index=0)
+            # ref_aggr2_feat = torch.cat([ref_aggr_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1)], dim=1)
+
             # 对于异常clips第二步融合就自己与自己融，与正常clips的特征构建Rank loss
-            supa_aggr2_abn_feat = self.relation(supa_aggr_abn_feat, supa_aggr_abn_feat, index=1)
+            supa_aggr2_abn_feat = self.relation_two(supa_aggr_abn_feat, supa_aggr_abn_feat, index=0)
 
             ref_scores = self.f_classifier(ref_aggr2_feat)
             ref_p_scores_rgb = ref_p_scores_rgb.view(bs, ncrops, -1).mean(1)
-            ref_scores = ref_scores.view(-1, ncrops).mean(1)
-            return ref_p_scores_rgb, p_scores_flow, ref_scores, ref_aggr2_feat, supa_aggr2_abn_feat
+            ref_p_scores_flow = ref_p_scores_flow.view(bs, ncrops, -1).mean(1)
+
+            ref_scores = ref_scores.view(bs, ncrops, -1).mean(1)
+            return ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_aggr2_feat, supa_aggr2_abn_feat
 
         else:
             ref_hard_nor_feat, ref_hard_abn_feat, ref_conf_nor_feat, ref_conf_abn_feat \
@@ -105,10 +119,14 @@ class HardModel(nn.Module):
             ref_aggr_abn_feat = self.relation(ref_conf_abn_feat, ref_hard_abn_feat, index=0)
 
             #第二步融合
-            ref_aggr2_abn_feat = self.relation(ref_aggr_abn_feat, supa_aggr_abn_feat, index=1)
-            ref_aggr2_nor_feat = self.relation(ref_aggr_nor_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1), index=1)
+            ref_aggr2_abn_feat = self.relation_two(ref_aggr_abn_feat, supa_aggr_abn_feat, index=0)
+            # ref_aggr2_abn_feat = torch.cat([ref_aggr_abn_feat, supa_aggr_abn_feat], dim=1)
+
+            ref_aggr2_nor_feat = self.relation_two(ref_aggr_nor_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1), index=0)
 
             ref_scores = self.f_classifier(ref_aggr2_abn_feat)
             ref_p_scores_rgb = ref_p_scores_rgb.view(bs, ncrops, -1).mean(1)
-            ref_scores = ref_scores.view(-1, ncrops).mean(1)
-            return ref_p_scores_rgb, p_scores_flow, ref_scores, ref_aggr2_nor_feat, ref_aggr2_abn_feat
+            ref_p_scores_flow = ref_p_scores_flow.view(bs, ncrops, -1).mean(1)
+
+            ref_scores = ref_scores.view(bs, ncrops, -1).mean(1)
+            return ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_aggr2_nor_feat, ref_aggr2_abn_feat

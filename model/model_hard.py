@@ -58,8 +58,8 @@ class HardModel(nn.Module):
             p_scores_flow = self.p_classifier_flow(inputs_flow).squeeze(2)  # (bs*ncrops, T)
 
         features = inputs_rgb
-        # features = self.Aggregate(inputs_rgb)    #RTFM的attention放在这里精度有明显提升（能达到96.6，2个百分点），但放到后面会起很大的负作用
-        # features = self.drop_out(inputs_rgb)  # (bs*ncrops, T, F)
+        # features = self.Aggregate(features)    #RTFM的attention放在这里精度有明显提升（能达到96.6，2个百分点），但放到后面会起很大的负作用
+        # features = self.drop_out(features)  # (bs*ncrops, T, F)
 
         bs = bs // 3
 

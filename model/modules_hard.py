@@ -157,9 +157,9 @@ class VideoRelation(nn.Module):
         # ref_feat = ref_feat + attention
 
         sup_feat = F.relu(self.fcs[0](sup_feat))
-        for i in range(1):
+        for i in range(2):
             ref_feat = F.relu(self.fcs[i](ref_feat))
-            attention = self.attention_module_multi_head(ref_feat, sup_feat, index=i)
+            attention = self.attention_module_multi_head(ref_feat, sup_feat, feat_dim=self.feat_dim, dim=(self.feat_dim, self.feat_dim, self.feat_dim), index=i)
             ref_feat = ref_feat + attention
 
         return ref_feat

@@ -47,8 +47,8 @@ class RTFM_loss(torch.nn.Module):
         loss_cls = self.criterion(ref_scores, ref_labels)  # BCE loss in the score space
         loss_abn = torch.abs(self.margin - torch.norm(torch.mean(sup_attn_feat, dim=1), p=2, dim=1))
         loss_nor = torch.norm(torch.mean(ref_attn_feat, dim=1), p=2, dim=1)
-
         loss_um = torch.mean((loss_abn + loss_nor) ** 2)
+
         loss_total = loss_cls + self.alpha * loss_um
 
         return loss_total

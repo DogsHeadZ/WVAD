@@ -3,6 +3,8 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
+from model.modules_hard import Hard_sim_sample_generator, Hard_score_sample_generator, VideoRelation, Aggregate
+
 
 def get_padding_shape(filter_shape, stride, mod=0):
     """Fetch a tuple describing the input padding shape.
@@ -191,22 +193,16 @@ class Mixed(torch.nn.Module):
 
 class I3D(torch.nn.Module):
     def __init__(self,
-                 # num_classes,
-                 # modality='rgb',
-                 # dropout_prob=0,
-                 name='inception'):
+                 modality='rgb'):
         super(I3D, self).__init__()
 
-        self.name = name
-        # self.num_classes = num_classes
-        # if modality == 'rgb':
-        in_channels = 3
-        # elif modality == 'flow':
-        #     in_channels = 2
-        # else:
-        #     raise ValueError(
-        #         '{} not among known modalities [rgb|flow]'.format(modality))
-        # self.modality = modality
+        if modality == 'rgb':
+            in_channels = 3
+        elif modality == 'flow':
+            in_channels = 2
+        else:
+            raise ValueError(
+                '{} not among known modalities [rgb|flow]'.format(modality))
 
         conv3d_1a_7x7 = Unit3Dpy(
             out_channels=64,
@@ -294,22 +290,214 @@ class I3D(torch.nn.Module):
         # out = out.mean(2)     # 这个取平均就能照顾到比16帧多的情况
         # out_logits = out
         # out = self.softmax(out_logits)
-        return out,out_4f,out_3f#, out_logits
+        return out,out_4f#, out_logits
 
-class I3D_SGA_STD(nn.Module):
+
+class I3D_Hard(nn.Module):
+    def __init__(self, feature_dim, dropout_rate, freeze_bn=False, freeze_backbone=False, freeze_blocks=None,
+                 freeze_bn_statics=False, pretrained_backbone=False, rgb_model_path=None, flow_model_path=None):
+        super(I3D_Hard, self).__init__()
+        self.rgb_backbone = I3D(modality='rgb')
+        self.flow_backbone = I3D(modality='flow')
+
+        self.hard_sim_sampler = Hard_sim_sample_generator()
+        self.hard_score_sampler = Hard_score_sample_generator()
+        self.relation = VideoRelation(feat_dim=feature_dim)
+        self.relation_two = VideoRelation(feat_dim=feature_dim)
+
+        self.p_classifier_rgb = nn.Sequential(nn.Dropout(dropout_rate), nn.Linear(1024, 2))
+        self.p_classifier_flow = nn.Sequential(nn.Dropout(dropout_rate), nn.Linear(1024, 2))
+        self.f_classifier = nn.Sequential(nn.Dropout(dropout_rate), nn.Linear(1024, 2))
+
+        self.GAP = nn.AdaptiveAvgPool3d(1)
+        self.Softmax = nn.Softmax(dim=-1)
+
+        self.freeze_bn = freeze_bn
+        self.freeze_backbone = freeze_backbone
+
+        self.freeze_bn_statics = freeze_bn_statics
+        if freeze_blocks == None:
+            self.freeze_blocks = ['conv3d_1a_7x7', 'conv3d_2b_1x1', 'conv3d_2c_3x3', 'mixed_3b', 'mixed_3c', 'mixed_4b',
+                                  'mixed_4c', 'mixed_4d', 'mixed_4e', 'mixed_4f', 'mixed_5b', 'mixed_5c']
+        else:
+            self.freeze_blocks = freeze_blocks
+        if pretrained_backbone and rgb_model_path != None and flow_model_path != None:
+            self.load_part_model(rgb_model_path, flow_model_path)
+
+    def load_part_model(self, rgb_model_path, flow_model_path):
+        rgb_dict = torch.load(rgb_model_path)
+        rgb_state_dict = self.rgb_backbone.state_dict()
+        rgb_new_dict = {k: v for k, v in rgb_dict.items() if k in rgb_state_dict.keys()}
+        rgb_state_dict.update(rgb_new_dict)
+        self.rgb_backbone.load_state_dict(rgb_state_dict)
+
+        flow_dict = torch.load(flow_model_path)
+        flow_state_dict = self.flow_backbone.state_dict()
+        flow_new_dict = {k: v for k, v in flow_dict.items() if k in flow_state_dict.keys()}
+        flow_state_dict.update(flow_new_dict)
+        self.flow_backbone.load_state_dict(flow_state_dict)
+
+    def freeze_part_model(self):
+        if self.freeze_backbone:
+            for name, p in self.rgb_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad = False
+            for name, p in self.flow_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad = False
+
+        else:
+            for name, p in self.rgb_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad = True
+            for name, p in self.flow_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad = True
+
+    def freeze_batch_norm(self):
+        if self.freeze_bn:
+            for name, module in self.rgb_backbone.named_modules():
+                if isinstance(module, nn.BatchNorm3d) or isinstance(module, nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:  # 这个地方有点问题，之后解冻的时候这里没改成False，已改
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad = False
+                        module.bias.requires_grad = False
+
+            for name, module in self.flow_backbone.named_modules():
+                if isinstance(module, nn.BatchNorm3d) or isinstance(module, nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:  # 这个地方有点问题，之后解冻的时候这里没改成False，已改
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad = False
+                        module.bias.requires_grad = False
+
+        else:
+            for name, module in self.rgb_backbone.named_modules():
+                if isinstance(module, nn.BatchNorm3d) or isinstance(module, nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad = True
+                        module.bias.requires_grad = True
+
+            for name, module in self.flow_backbone.named_modules():
+                if isinstance(module, nn.BatchNorm3d) or isinstance(module, nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad = True
+                        module.bias.requires_grad = True
+
+    def train(self, mode=True):
+        super(I3D_Hard, self).train(mode)
+        if self.freeze_backbone:
+            self.freeze_part_model()
+        if self.freeze_bn:
+            self.freeze_batch_norm()
+        return self
+
+    def forward(self, ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow, mode='normal',
+                isTrain=True):
+        # print(ref_rgb.shape)       # [B,N,C,T,H,W]  [4,3,(10crops),3,16,224,224]
+        inputs_rgb = torch.cat((ref_rgb, normal_rgb, abnormal_rgb), 0)
+        inputs_flow = torch.cat((ref_flow, normal_flow, abnormal_flow), 0)
+        bs, N, C, T, H, W = inputs_rgb.size()
+        bs_f, N_f, C_f, T_f, H_f, W_f = inputs_flow.size()
+        inputs_rgb = inputs_rgb.view(bs*N, C, T, H, W)
+        inputs_flow = inputs_flow.view(bs_f*N_f, C_f, T_f, H_f, W_f)
+
+        inputs_rgb_feat, _ = self.rgb_backbone(inputs_rgb)  # [B*N,F]
+        inputs_rgb_feat = self.GAP(inputs_rgb_feat).squeeze(-1).squeeze(-1).squeeze(-1)
+        with torch.no_grad():
+            inputs_flow_feat, _ = self.flow_backbone(inputs_flow)
+            inputs_flow_feat = self.GAP(inputs_flow_feat).squeeze(-1).squeeze(-1).squeeze(-1)
+
+        F_len = inputs_rgb_feat.size()[-1]
+        inputs_rgb_feat = inputs_rgb_feat.view(-1, N, F_len)
+        inputs_flow_feat = inputs_flow_feat.view(-1, N, F_len)
+
+        p_scores_rgb = self.Softmax(self.p_classifier_rgb(inputs_rgb_feat))[:, :, 1]  # (bs, N)
+        p_scores_flow = self.Softmax(self.p_classifier_flow(inputs_flow_feat))[:, :, 1]
+
+        bs = bs // 3
+        ref_p_scores_rgb, abn_scores_rgb = p_scores_rgb[:bs], p_scores_rgb[2 * bs:3 * bs]
+        ref_p_scores_flow, abn_scores_flow = p_scores_flow[:bs], p_scores_flow[2 * bs:3 * bs]
+
+        ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow = \
+            inputs_rgb_feat[:bs], inputs_flow_feat[:bs], inputs_rgb_feat[bs:2 * bs], \
+            inputs_flow_feat[bs:2 * bs], inputs_rgb_feat[2 * bs:3 * bs], inputs_flow_feat[2 * bs:3 * bs]
+
+        if not isTrain:
+            # ref_aggr = self.relation(ref_rgb, ref_rgb, index=0)  # 测试时直接与自身进行融合
+            # ref_aggr = self.relation_two(ref_aggr, ref_aggr, index=0)
+            ref_scores = self.Softmax(self.f_classifier(ref_rgb))[:,:,1]   #[bs, N]
+            return ref_scores
+
+        supn_hard_feat, supn_conf_feat = self.hard_sim_sampler(normal_rgb)
+        supa_hard_nor_feat, supa_hard_abn_feat, supa_conf_nor_feat, supa_conf_abn_feat \
+            = self.hard_score_sampler(abnormal_rgb, abn_scores_rgb, abn_scores_flow)
+
+        # 第一步融合
+        supn_aggr_feat = self.relation(supn_conf_feat, supn_hard_feat, index=0)  # 融合正常视频困难样本的特征，使得conf样本更具有鲁棒性
+        supa_aggr_nor_feat = self.relation(supa_conf_nor_feat, supa_hard_nor_feat, index=0)  # 异常视频normal clips融合
+        supa_aggr_abn_feat = self.relation(supa_conf_abn_feat, supa_hard_abn_feat, index=0)  # 异常视频abnormal clips融合
+
+        if mode == 'normal':
+            ref_hard_feat, ref_conf_feat = self.hard_sim_sampler(ref_rgb)
+            ref_aggr_feat = self.relation(ref_conf_feat, ref_hard_feat, index=0)
+            # 第二步融合
+            # 融合不同视频正常clips
+            ref_aggr2_feat = self.relation_two(ref_aggr_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1),
+                                               index=0)
+            # ref_aggr2_feat = torch.cat([ref_aggr_feat, torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1)], dim=1)
+
+            # 对于异常clips第二步融合就自己与自己融，与正常clips的特征构建Rank loss
+            supa_aggr2_abn_feat = self.relation_two(supa_aggr_abn_feat, supa_aggr_abn_feat, index=0)
+
+            ref_scores = self.Softmax(self.f_classifier(ref_aggr2_feat))[:,:,1]
+
+            return ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_aggr2_feat, supa_aggr2_abn_feat
+
+        else:
+            ref_hard_nor_feat, ref_hard_abn_feat, ref_conf_nor_feat, ref_conf_abn_feat \
+                = self.hard_score_sampler(ref_rgb, ref_p_scores_rgb, ref_p_scores_flow)
+            ref_aggr_nor_feat = self.relation(ref_conf_nor_feat, ref_hard_nor_feat, index=0)
+            ref_aggr_abn_feat = self.relation(ref_conf_abn_feat, ref_hard_abn_feat, index=0)
+
+            # 第二步融合
+            ref_aggr2_abn_feat = self.relation_two(ref_aggr_abn_feat, supa_aggr_abn_feat, index=0)
+            # ref_aggr2_abn_feat = torch.cat([ref_aggr_abn_feat, supa_aggr_abn_feat], dim=1)
+
+            ref_aggr2_nor_feat = self.relation_two(ref_aggr_nor_feat,
+                                                   torch.cat([supn_aggr_feat, supa_aggr_nor_feat], dim=1), index=0)
+
+            ref_scores = self.Softmax(self.f_classifier(ref_aggr2_abn_feat))[:,:,1]
+
+            return ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_aggr2_nor_feat, ref_aggr2_abn_feat
+
+class I3D_Base(nn.Module):
     def __init__(self,dropout_rate,expand_k,freeze_bn=False,freeze_backbone=False,freeze_blocks=None,freeze_bn_statics=False,
-                 pretrained_backbone=False,pretrained_path=None):
-        super(I3D_SGA_STD, self).__init__()
-        self.backbone=I3D()
-        # self.Conv_Atten=Self_Inc_Guided_Attention(832,expand_k,out_t_channels=2)
-        # self.Conv_Atten=Self_Guided_Attention(832,expand_k,out_t_channels=2)
+                 pretrained_backbone=False,rgb_model_path=None,flow_model_path=None):
+        super(I3D_Base, self).__init__()
+        self.rgb_backbone=I3D(modality='rgb')
+        self.flow_backbone=I3D(modality='flow')
 
         self.Regressor=nn.Sequential(nn.Dropout(dropout_rate),nn.Linear(1024,2))
-        self.Softmax=nn.Softmax(dim=-1)
+        self.Softmax = nn.Softmax(dim=-1)
 
         self.freeze_bn=freeze_bn
         self.freeze_backbone=freeze_backbone
-        self.GAP=nn.AdaptiveAvgPool3d(1)
+        self.rgb_GAP=nn.AdaptiveAvgPool3d(1)
+        self.flow_GAP=nn.AdaptiveAvgPool3d(1)
 
         self.freeze_bn_statics = freeze_bn_statics
         if freeze_blocks==None:
@@ -317,33 +505,43 @@ class I3D_SGA_STD(nn.Module):
                                 'mixed_4c','mixed_4d','mixed_4e','mixed_4f','mixed_5b','mixed_5c']
         else:
             self.freeze_blocks=freeze_blocks
-        if pretrained_backbone and pretrained_path!=None:
-            self.load_part_model(pretrained_path)
+        if pretrained_backbone and rgb_model_path!=None and flow_model_path!=None:
+            self.load_part_model(rgb_model_path, flow_model_path)
 
 
-    def load_part_model(self,pretrained_model_path):
-        pretrained_dict=torch.load(pretrained_model_path)
-        state_dict=self.backbone.state_dict()
-        new_dict={k:v for k,v in pretrained_dict.items() if k in state_dict.keys()}
-        # no_load_list=[k for k in state_dict.keys() if k not in new_dict.keys()]
-        # import pdb
-        # pdb.set_trace()
-        state_dict.update(new_dict)
-        self.backbone.load_state_dict(state_dict)
+    def load_part_model(self, rgb_model_path, flow_model_path):
+        rgb_dict=torch.load(rgb_model_path)
+        rgb_state_dict=self.rgb_backbone.state_dict()
+        rgb_new_dict={k:v for k,v in rgb_dict.items() if k in rgb_state_dict.keys()}
+        rgb_state_dict.update(rgb_new_dict)
+        self.rgb_backbone.load_state_dict(rgb_state_dict)
+
+        flow_dict = torch.load(flow_model_path)
+        flow_state_dict = self.flow_backbone.state_dict()
+        flow_new_dict = {k: v for k, v in flow_dict.items() if k in flow_state_dict.keys()}
+        flow_state_dict.update(flow_new_dict)
+        self.flow_backbone.load_state_dict(flow_state_dict)
 
     def freeze_part_model(self):
         if self.freeze_backbone:
-            for name,p in self.backbone.named_parameters():
+            for name,p in self.rgb_backbone.named_parameters():
                 if name.split('.')[0] in self.freeze_blocks:
                     p.requires_grad=False
+            for name,p in self.flow_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad=False
+
         else:
-            for name,p in self.backbone.named_parameters():
+            for name,p in self.rgb_backbone.named_parameters():
+                if name.split('.')[0] in self.freeze_blocks:
+                    p.requires_grad=True
+            for name,p in self.flow_backbone.named_parameters():
                 if name.split('.')[0] in self.freeze_blocks:
                     p.requires_grad=True
 
     def freeze_batch_norm(self):
         if self.freeze_bn:
-            for name, module in self.backbone.named_modules():
+            for name, module in self.rgb_backbone.named_modules():
                 if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
                     if name.split('.')[0] in self.freeze_blocks:
                         if self.freeze_bn_statics:    # 这个地方有点问题，之后解冻的时候这里没改成False，已改
@@ -352,8 +550,19 @@ class I3D_SGA_STD(nn.Module):
                             module.train()
                         module.weight.requires_grad=False
                         module.bias.requires_grad=False
+
+            for name, module in self.flow_backbone.named_modules():
+                if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
+                    if name.split('.')[0] in self.freeze_blocks:
+                        if self.freeze_bn_statics:    # 这个地方有点问题，之后解冻的时候这里没改成False，已改
+                            module.eval()
+                        else:
+                            module.train()
+                        module.weight.requires_grad=False
+                        module.bias.requires_grad=False
+
         else:
-            for name, module in self.backbone.named_modules():
+            for name, module in self.rgb_backbone.named_modules():
                 if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
                     if name.split('.')[0] in self.freeze_blocks:
                         if self.freeze_bn_statics:
@@ -363,90 +572,7 @@ class I3D_SGA_STD(nn.Module):
                         module.weight.requires_grad=True
                         module.bias.requires_grad=True
 
-    def train(self,mode=True):
-        super(I3D_SGA_STD, self).train(mode)
-        if self.freeze_backbone:
-            self.freeze_part_model()
-        if self.freeze_bn:
-            self.freeze_batch_norm()
-        return self
-
-    def forward(self,x,act=True,extract=False):
-        feat_map,feat_map_4f,_=self.backbone(x)
-        # print(feat_map.shape)
-        # print(feat_map_4f.shape)
-        atten_map,atten_logits,att_feat_map=self.Conv_Atten(feat_map_4f)
-        atten_feat_map=atten_map*feat_map
-        # feat_map=torch.cat([feat_map,atten_feat_map],dim=1)
-        feat_map=feat_map+atten_feat_map
-        feat=self.GAP(feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
-        logits=self.Regressor(feat)
-        if act:
-            logits=self.Softmax(logits)
-            atten_logits=self.Softmax(atten_logits)
-        if not extract:
-            return logits,feat_map,atten_logits,atten_map
-        else:
-            return logits,feat_map,atten_logits,atten_map,att_feat_map
-
-class I3D_Base(nn.Module):
-    def __init__(self,dropout_rate,expand_k,freeze_bn=False,freeze_backbone=False,freeze_blocks=None,freeze_bn_statics=False,
-                 pretrained_backbone=False,pretrained_path=None):
-        super(I3D_Base, self).__init__()
-        self.backbone=I3D()
-        # self.Conv_Atten=Self_Inc_Guided_Attention(832,expand_k,out_t_channels=2)
-        # self.Conv_Atten=Self_Guided_Attention(832,expand_k,out_t_channels=2)
-
-        self.Regressor=nn.Sequential(nn.Dropout(dropout_rate),nn.Linear(1024,2))
-        self.Softmax=nn.Softmax(dim=-1)
-
-        self.freeze_bn=freeze_bn
-        self.freeze_backbone=freeze_backbone
-        self.GAP=nn.AdaptiveAvgPool3d(1)
-
-        self.freeze_bn_statics = freeze_bn_statics
-        if freeze_blocks==None:
-            self.freeze_blocks=['conv3d_1a_7x7','conv3d_2b_1x1','conv3d_2c_3x3','mixed_3b','mixed_3c','mixed_4b',
-                                'mixed_4c','mixed_4d','mixed_4e','mixed_4f','mixed_5b','mixed_5c']
-        else:
-            self.freeze_blocks=freeze_blocks
-        if pretrained_backbone and pretrained_path!=None:
-            self.load_part_model(pretrained_path)
-
-
-    def load_part_model(self,pretrained_model_path):
-        pretrained_dict=torch.load(pretrained_model_path)
-        state_dict=self.backbone.state_dict()
-        new_dict={k:v for k,v in pretrained_dict.items() if k in state_dict.keys()}
-        # no_load_list=[k for k in state_dict.keys() if k not in new_dict.keys()]
-        # import pdb
-        # pdb.set_trace()
-        state_dict.update(new_dict)
-        self.backbone.load_state_dict(state_dict)
-
-    def freeze_part_model(self):
-        if self.freeze_backbone:
-            for name,p in self.backbone.named_parameters():
-                if name.split('.')[0] in self.freeze_blocks:
-                    p.requires_grad=False
-        else:
-            for name,p in self.backbone.named_parameters():
-                if name.split('.')[0] in self.freeze_blocks:
-                    p.requires_grad=True
-
-    def freeze_batch_norm(self):
-        if self.freeze_bn:
-            for name, module in self.backbone.named_modules():
-                if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
-                    if name.split('.')[0] in self.freeze_blocks:
-                        if self.freeze_bn_statics:    # 这个地方有点问题，之后解冻的时候这里没改成False，已改
-                            module.eval()
-                        else:
-                            module.train()
-                        module.weight.requires_grad=False
-                        module.bias.requires_grad=False
-        else:
-            for name, module in self.backbone.named_modules():
+            for name, module in self.flow_backbone.named_modules():
                 if isinstance(module,nn.BatchNorm3d) or isinstance(module,nn.BatchNorm2d):
                     if name.split('.')[0] in self.freeze_blocks:
                         if self.freeze_bn_statics:
@@ -464,13 +590,23 @@ class I3D_Base(nn.Module):
             self.freeze_batch_norm()
         return self
 
-    def forward(self,x):
-        feat_map,feat_map_4f,_=self.backbone(x)
-        # print(feat_map.shape)
-        # print(feat_map_4f.shape)
-        feat=self.GAP(feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
-        logits=self.Regressor(feat)
+    def forward(self,x_rgb, x_flow):
+        # print(x_rgb.shape)
 
-        logits=self.Softmax(logits)
+        rgb_feat_map, rgb_feat_map_4f = self.rgb_backbone(x_rgb)
+        # flow_feat_map, flow_feat_map_4f = self.flow_backbone(x_flow)
 
-        return logits,feat_map
+        rgb_feat=self.rgb_GAP(rgb_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        rgb_logits=self.Softmax(self.Regressor(rgb_feat))
+
+        # flow_feat = self.flow_GAP(flow_feat_map).squeeze(-1).squeeze(-1).squeeze(-1)
+        # flow_logits = self.Softmax(self.Regressor(flow_feat))
+        #
+        # out_logits = rgb_logits + flow_logits
+        # out_logits = self.Softmax(out_logits)
+
+        return rgb_logits
+
+
+
+

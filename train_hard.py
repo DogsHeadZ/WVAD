@@ -16,7 +16,7 @@ from train_utils import AverageMeter
 from eval_utils import eval, cal_rmse
 
 from dataset import Train_TemAug_Dataset_SHT_I3D, Test_Dataset_SHT_I3D
-from model.I3D import I3D_Co
+from model.I3D_hard import I3D_Hard
 from losses import Weighted_BCE_Loss
 from balanced_dataparallel import BalancedDataParallel
 
@@ -27,16 +27,13 @@ def eval_epoch(config, model, test_dataloader):
 
     for frames, flows, ano_types, idxs, annos in tqdm(test_dataloader):
         # [42, 3, 16, 240, 320]
-        # frames=frames.float().contiguous().view([-1, 3, frames.shape[-3], frames.shape[-2], frames.shape[-1]]).cuda()
-        # flows=flows.float().contiguous().view([-1, 2, flows.shape[-3], flows.shape[-2], flows.shape[-1]]).cuda()
-        frames = frames.float().contiguous().cuda()
-        flows = flows.float().contiguous().cuda()
-
+        frames=frames.float().contiguous().view([-1, 1, 3, frames.shape[-3], frames.shape[-2], frames.shape[-1]]).cuda()
+        flows=flows.float().contiguous().view([-1, 1, 2, flows.shape[-3], flows.shape[-2], flows.shape[-1]]).cuda()
         with torch.no_grad():
-            scores = model.module.forward_test(frames)
-
+            scores = model(frames, flows, frames, flows, frames, flows, isTrain=False)
+            scores = scores[1]
         for clip, score, ano_type, idx, anno in zip(frames, scores, ano_types, idxs, annos):
-            score = [score.squeeze()[1].detach().cpu().float().item()] * config['segment_len']
+            score = [score.detach().cpu().float().item()] * config['segment_len']
             anno=anno.detach().numpy().astype(int)
             total_scores.extend(score)
             total_labels.extend(anno.tolist())
@@ -60,25 +57,22 @@ def train(config):
     ref_dataset_nor = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
                                                 config['pseudo_labels'], config['clips_num'],
                                                 segment_len=config['segment_len'], type='Normal', ten_crop=config['ten_crop'], hard_label=True)
-
     ref_dataset_abn = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'],
-                                               config['train_split'],
-                                               config['pseudo_labels'], config['clips_num'],
-                                               segment_len=config['segment_len'], type='Abnormal',
-                                               ten_crop=config['ten_crop'], hard_label=True)
-
+                                                  config['train_split'],
+                                                  config['pseudo_labels'], config['clips_num'],
+                                                  segment_len=config['segment_len'], type='Abnormal',
+                                                  ten_crop=config['ten_crop'], hard_label=True)
     norm_dataset = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
                                                 config['pseudo_labels'], config['clips_num'],
                                                 segment_len=config['segment_len'], type='Normal', ten_crop=config['ten_crop'], hard_label=True)
-
     abnorm_dataset = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
                                                   config['pseudo_labels'], config['clips_num'],
                                                   segment_len=config['segment_len'], type='Abnormal', ten_crop=config['ten_crop'], hard_label=True)
 
     ref_dataloader_nor = DataLoader(ref_dataset_nor, batch_size=config['batch_size'], shuffle=True,
-                                num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
-    ref_dataloader_abn = DataLoader(ref_dataset_abn, batch_size=config['batch_size'], shuffle=True,
                                  num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
+    ref_dataloader_abn = DataLoader(ref_dataset_abn, batch_size=config['batch_size'], shuffle=True,
+                                    num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
     norm_dataloader = DataLoader(norm_dataset, batch_size=config['batch_size'], shuffle=True,
                                  num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
     abnorm_dataloader = DataLoader(abnorm_dataset, batch_size=config['batch_size'], shuffle=True,
@@ -90,9 +84,8 @@ def train(config):
     test_dataloader = DataLoader(test_dataset, batch_size=config['test_batch_size'], shuffle=False,
                                  num_workers=10, worker_init_fn=worker_init, drop_last=False, pin_memory=True)
 
-
     #### Model setting ####
-    model = I3D_Co(config['dropout_rate'], config['expand_k'],
+    model = I3D_Hard(config['feature_dim'], config['dropout_rate'],
                         freeze_backbone=config['freeze_backbone'], freeze_blocks=config['freeze_blocks'],
                         freeze_bn=config['freeze_backbone'],freeze_bn_statics=True,
                         pretrained_backbone=config['pretrained'], rgb_model_path=config['rgb_pretrained_model_path'],flow_model_path=config['flow_pretrained_model_path']
@@ -127,14 +120,16 @@ def train(config):
     iterator = 0
     test_epoch = 10 if config['eval_epoch'] is None else config['eval_epoch']
     AUCs,tious,best_epoch,best_tiou_epoch,best_tiou,best_AUC=[],[],0,0,0,0
-    # auc = eval_epoch(config, model, test_dataloader)
 
     ref_iter_abn = iter(ref_dataloader_abn)
-    abnorm_iter = iter(abnorm_dataloader)
-    norm_iter = iter(norm_dataloader)
+    sup_iter_nor = iter(norm_dataloader)
+    sup_iter_abn = iter(abnorm_dataloader)
+
+    # auc = eval_epoch(config, model, test_dataloader)
+    # print(auc)
 
     for epoch in range(config['epochs']):
-
+        model = model.train()
         if config['freeze_backbone'] and epoch == config['freeze_epochs']:
             model.module.freeze_backbone=False
             model.module.freeze_bn=False
@@ -143,61 +138,44 @@ def train(config):
             model.module.freeze_batch_norm()
 
         Errs, Atten_Errs, Rmses = AverageMeter(), AverageMeter(), AverageMeter()
-        for step, (ref_frames_nor, ref_flows_nor, ref_labels_nor) in tqdm(enumerate(ref_dataloader_nor)):
-            # [B,N,(10crops),C,T,H,W]  [20,3,(10crops),3,16,224,224] ->[B*N,C,T,W,H]
-
+        for step, (ref_rgb_nor, ref_flow_nor, ref_labels_nor) in tqdm(enumerate(ref_dataloader_nor)):
+            # [B,N,(10crops),C,T,H,W]  [20,3,(10crops),3,16,224,224]
             try:
-                ref_frames_abn, ref_flows_abn, ref_labels_abn = next(ref_iter_abn)
+                ref_rgb_abn, ref_flow_abn, ref_labels_abn = next(ref_iter_abn)
             except:
                 del ref_iter_abn
                 ref_iter_abn = iter(ref_dataloader_abn)
-                ref_frames_abn, ref_flows_abn, ref_labels_abn = next(ref_iter_abn)
+                ref_rgb_abn, ref_flow_abn, ref_labels_abn = next(ref_iter_abn)
 
             try:
-                norm_frames, norm_flows, norm_labels = next(norm_iter)
+                sup_rgb_nor, sup_flow_nor, sup_labels_nor = next(sup_iter_nor)
             except:
-                del norm_iter
-                norm_iter = iter(norm_dataloader)
-                norm_frames, norm_flows, norm_labels = next(norm_iter)
+                del sup_iter_nor
+                sup_iter_nor = iter(norm_dataloader)
+                sup_rgb_nor, sup_flow_nor, sup_labels_nor = next(sup_iter_nor)
 
             try:
-                abnorm_frames, abnorm_flows, abnorm_labels = next(abnorm_iter)
+                sup_rgb_abn, sup_flow_abn, sup_labels_abn = next(sup_iter_abn)
             except:
-                del abnorm_iter
-                abnorm_iter = iter(abnorm_dataloader)
-                abnorm_frames, abnorm_flows, abnorm_labels = next(abnorm_iter)
+                del sup_iter_abn
+                sup_iter_abn = iter(abnorm_dataloader)
+                sup_rgb_abn, sup_flow_abn, sup_labels_abn = next(sup_iter_abn)
 
-            ref_frames_nor, ref_flows_nor, ref_labels_nor = ref_frames_nor.cuda().float(), ref_flows_nor.cuda().float(), ref_labels_nor.cuda().float()
-            ref_frames_abn, ref_flows_abn, ref_labels_abn = ref_frames_abn.cuda().float(), ref_flows_abn.cuda().float(), ref_labels_abn.cuda().float()
-            norm_frames, norm_flows = norm_frames.cuda().float(), norm_flows.cuda().float()
-            abnorm_frames, abnorm_flows = abnorm_frames.cuda().float(), abnorm_flows.cuda().float()
+            ref_rgb_nor, ref_flow_nor, ref_labels_nor = ref_rgb_nor.cuda().float(), ref_flow_nor.cuda().float(), ref_labels_nor.cuda().float()
+            ref_rgb_abn, ref_flow_abn, ref_labels_abn = ref_rgb_abn.cuda().float(), ref_flow_abn.cuda().float(), ref_labels_abn.cuda().float()
+            sup_rgb_nor, sup_flow_nor, sup_labels_nor = sup_rgb_nor.cuda().float(), sup_flow_nor.cuda().float(), sup_labels_nor.cuda().float()
+            sup_rgb_abn, sup_flow_abn, sup_labels_abn = sup_rgb_abn.cuda().float(), sup_flow_abn.cuda().float(), sup_labels_abn.cuda().float()
 
-            scores_nor, scores_p_nor, ref_attn_feat_nor, sup_attn_feat_nor = model(ref_frames_nor, ref_flows_nor, norm_frames, norm_flows, abnorm_frames, abnorm_flows)
-            scores_abn, scores_p_abn, ref_attn_feat_abn, sup_attn_feat_abn = model(ref_frames_abn, ref_flows_abn, norm_frames, norm_flows, abnorm_frames, abnorm_flows, mode='Abnormal')
-            scores = torch.cat([scores_nor, scores_abn], dim=0)
-            scores = scores.view([-1, 2])[:, -1]
-            scores_p = torch.cat([scores_p_nor, scores_p_abn], dim=0).view([-1])
-            # print('scores:')
-            # print(scores.shape)
-
-            ref_labels_nor = torch.zeros_like(scores_nor).cuda().float()
-            ref_labels_abn = torch.ones_like(scores_abn).cuda().float()
-            labels = torch.cat([ref_labels_nor, ref_labels_abn], dim=0)
-            labels = labels.view([-1, 2])[:, -1]
-            # print('labels:')
-            # print(labels)
-            # print(labels.shape)
-
-            ref_labels_nor_p = torch.zeros_like(scores_p_nor).cuda().float()
-            ref_labels_abn_p = torch.ones_like(scores_p_abn).cuda().float()
-            labels_p = torch.cat([ref_labels_nor_p, ref_labels_abn_p], dim=0).view([-1])
-
-            err = criterion(scores, labels)
-            err_p = criterion(scores_p, labels_p)
-
-            loss = config['lambda_base'] * err + err_p
-
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
+            # for ref normal frames
+            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = \
+                model(ref_rgb_nor, ref_flow_nor, sup_rgb_nor, sup_flow_nor, sup_rgb_abn, sup_flow_abn)
+            ref_p_labels_nor_rgb = torch.zeros_like(ref_p_scores_rgb).cuda().float()
+            ref_p_labels_nor_flow = torch.zeros_like(ref_p_scores_flow).cuda().float()
+            ref_labels_nor = torch.zeros_like(ref_scores).cuda().float()
+            cost1 = criterion(ref_scores, ref_labels_nor) + \
+                    criterion(ref_p_scores_rgb, ref_p_labels_nor_rgb) + \
+                    criterion(ref_p_scores_flow, ref_p_labels_nor_flow)
+            with amp.scale_loss(cost1, optimizer) as scaled_loss:
                 scaled_loss.backward()
 
             if iterator % config['accumulate_step'] == 0:
@@ -205,12 +183,28 @@ def train(config):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            rmse = cal_rmse(scores.detach().cpu().numpy(), labels.unsqueeze(-1).detach().cpu().numpy())
-            Rmses.update(rmse), Errs.update(err)
+            # for ref abnormal frames
+            ref_p_scores_rgb, ref_p_scores_flow, ref_scores, ref_attn_feat, sup_attn_feat = \
+                model(ref_rgb_abn, ref_flow_abn, sup_rgb_nor, sup_flow_nor, sup_rgb_abn, sup_flow_abn, mode='abnormal')
+            ref_p_labels_abn_rgb = torch.ones_like(ref_p_scores_rgb).cuda().float()
+            ref_p_labels_abn_flow = torch.ones_like(ref_p_scores_flow).cuda().float()
+            ref_labels_abn = torch.ones_like(ref_scores).cuda().float()
+            cost2 = criterion(ref_scores, ref_labels_abn) + \
+                    criterion(ref_p_scores_rgb, ref_p_labels_abn_rgb) + \
+                    criterion(ref_p_scores_flow, ref_p_labels_abn_flow)
+
+            with amp.scale_loss(cost2, optimizer) as scaled_loss:
+                scaled_loss.backward()
+            if iterator % config['accumulate_step'] == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config['grad_clip'])
+                optimizer.step()
+                optimizer.zero_grad()
+
+            Errs.update(cost1+cost2)
 
             iterator += 1
         train_utils.log('[{}]: err\t{:.4f}\tatten\t{:.4f}'.format(epoch, Errs, Atten_Errs))
-        Errs.reset(), Rmses.reset(), Atten_Errs.reset()
+        Errs.reset(), Atten_Errs.reset()
 
         lr_scheduler.step()
         train_utils.log("epoch {}, lr {}".format(epoch, optimizer.param_groups[0]['lr']))
@@ -233,7 +227,6 @@ def train(config):
                     'optimizer': optimizer.state_dict(),
                 }
                 torch.save(checkpoint, os.path.join(save_path, 'models/model-epoch-{}-AUC-{}.pth'.format(epoch, auc)))
-            model = model.train()
 
     train_utils.log('Training is finished')
     train_utils.log('max_frame_AUC: {}'.format(best_AUC))

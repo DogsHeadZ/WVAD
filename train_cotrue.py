@@ -114,7 +114,7 @@ def train(config):
     AUCs,tious,best_epoch,best_tiou_epoch,best_tiou,best_AUC=[],[],0,0,0,0
 
     abnorm_iter = iter(abnorm_dataloader)
-    auc = eval_epoch(config, model, test_dataloader)
+    # auc = eval_epoch(config, model, test_dataloader)
     # print(auc)
     for epoch in range(config['epochs']):
 

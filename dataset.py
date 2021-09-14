@@ -144,7 +144,7 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
         self.get_vid_names_dict()
         self.type = type
 
-        self.test_dict_annotation()
+        # self.test_dict_annotation()
 
         if self.type == 'Normal':
             self.selected_keys = list(self.norm_vid_names_dict.keys())
@@ -253,13 +253,12 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
         key = self.selected_keys[i]
         scores = self.pseudo_labels[key + '.npy']
 
-        if self.type != 'Normal':    # 载入真实标签
-            scores = self.annotation_dict[key][0]
-            scores = scores[ : len(scores) - len(scores) % 16]
-            scores = scores.reshape((-1, 16))
-            # scores = np.mean(scores, 1)
-            scores = np.max(scores, 1)
-
+        # if self.type != 'Normal':    # 载入真实标签
+        #     scores = self.annotation_dict[key][0]
+        #     scores = scores[ : len(scores) - len(scores) % 16]
+        #     scores = scores.reshape((-1, 16))
+        #     # scores = np.mean(scores, 1)
+        #     scores = np.max(scores, 1)
 
         vid_len=self.selected_dict[key]
 
@@ -293,7 +292,6 @@ class Train_TemAug_Dataset_SHT_I3D(Dataset):
 
                 rgb_clips.append(frames)
                 flow_clips.append(flows)
-
 
                 if chosen >= scores.shape[0]:
                     score=scores[-1]

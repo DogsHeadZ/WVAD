@@ -1,14 +1,14 @@
 dataset_name: SHT
-rgb_dataset_path: ../AllDatasets/SHT_Frames.h5
-flow_dataset_path: flow/SHT_Flows.h5
+rgb_dataset_path: ../../zwh/Datasets/SHT_Frames.h5
+flow_dataset_path: ../datasets/SHT_Flows.h5
 train_split: data/SH_Train_new.txt
 test_split: data/SH_Test_NEW.txt
-#pseudo_labels: data/SHT_I3D_PLs.npy
-pseudo_labels: data/train_results.npy
+pseudo_labels: ../WVAD/data/SHT_I3D_PLs.npy
+# pseudo_labels: data/train_results.npy
 
-test_mask_dir: data/test_frame_mask/
+test_mask_dir: ../WVAD/data/test_frame_mask/
 
-feature_dim: 1024
+feature_dim: 512
 epochs: 801
 warmup_epochs: 5
 eval_epoch: 15
@@ -21,8 +21,8 @@ ten_crop: False
 
 # model parameters
 pretrained: True
-rgb_pretrained_model_path: pretrained/model_rgb.pth
-flow_pretrained_model_path: pretrained/model_flow.pth
+rgb_pretrained_model_path: ../WVAD/pretrained/C3D_Sport1M.pth
+flow_pretrained_model_path: ../WVAD/pretrained/model_flow.pth
 
 stored_path: stored_models/SHT_I3D_AUC_0.9483.pth
 freeze_backbone: True
@@ -43,6 +43,6 @@ grad_clip: 20
 optimizer: Adam
 optimizer_args: {lr: 0.0001, weight_decay: 0.0005, lr_scheduler: None, betas: [0.9, 0.999]}
 
-save_path: ./save/i3d_nocrop
+save_path: ./save/c3d_nocrop
 
 

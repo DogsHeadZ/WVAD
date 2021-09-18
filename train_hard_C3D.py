@@ -15,8 +15,8 @@ import train_utils
 from train_utils import AverageMeter
 from eval_utils import eval, cal_rmse
 
-from dataset import Train_TemAug_Dataset_SHT_I3D, Test_Dataset_SHT_I3D
-from model.I3D_hard import I3D_Hard
+from dataset_C3D import Train_TemAug_Dataset_SHT_C3D, Test_Dataset_SHT_C3D
+from model.C3D_hard import C3D_Hard
 from losses import Weighted_BCE_Loss, Hard_loss, sparsity, smooth
 from balanced_dataparallel import BalancedDataParallel
 
@@ -54,18 +54,18 @@ def train(config):
         random.seed(worked_id)
 
     # train
-    ref_dataset_nor = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
+    ref_dataset_nor = Train_TemAug_Dataset_SHT_C3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
                                                 config['pseudo_labels'], config['clips_num'],
                                                 segment_len=config['segment_len'], type='Normal', ten_crop=config['ten_crop'], hard_label=True)
-    ref_dataset_abn = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'],
+    ref_dataset_abn = Train_TemAug_Dataset_SHT_C3D(config['rgb_dataset_path'], config['flow_dataset_path'],
                                                   config['train_split'],
                                                   config['pseudo_labels'], config['clips_num'],
                                                   segment_len=config['segment_len'], type='Abnormal',
                                                   ten_crop=config['ten_crop'], hard_label=True)
-    norm_dataset = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
+    norm_dataset = Train_TemAug_Dataset_SHT_C3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
                                                 config['pseudo_labels'], config['clips_num'],
                                                 segment_len=config['segment_len'], type='Normal', ten_crop=config['ten_crop'], hard_label=True)
-    abnorm_dataset = Train_TemAug_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
+    abnorm_dataset = Train_TemAug_Dataset_SHT_C3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['train_split'],
                                                   config['pseudo_labels'], config['clips_num'],
                                                   segment_len=config['segment_len'], type='Abnormal', ten_crop=config['ten_crop'], hard_label=True)
 
@@ -79,15 +79,14 @@ def train(config):
                                    num_workers=5, worker_init_fn=worker_init, drop_last=True, pin_memory=True)
 
     # test
-    test_dataset = Test_Dataset_SHT_I3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['test_split'],
+    test_dataset = Test_Dataset_SHT_C3D(config['rgb_dataset_path'], config['flow_dataset_path'], config['test_split'],
                                         config['test_mask_dir'], segment_len=config['segment_len'], ten_crop=config['ten_crop'])
     test_dataloader = DataLoader(test_dataset, batch_size=config['test_batch_size'], shuffle=False,
                                  num_workers=10, worker_init_fn=worker_init, drop_last=False, pin_memory=True)
 
     #### Model setting ####
-    model = I3D_Hard(config['feature_dim'], config['dropout_rate'],
+    model = C3D_Hard(config['feature_dim'], config['dropout_rate'],
                         freeze_backbone=config['freeze_backbone'], freeze_blocks=config['freeze_blocks'],
-                        freeze_bn=config['freeze_backbone'],freeze_bn_statics=True,
                         pretrained_backbone=config['pretrained'], rgb_model_path=config['rgb_pretrained_model_path'],flow_model_path=config['flow_pretrained_model_path']
                         ).cuda()
 

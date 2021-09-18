@@ -18,11 +18,12 @@ def smooth(arr, lamda1):
     return lamda1*loss
 
 class Hard_loss(torch.nn.Module):
-    def __init__(self, alpha, margin):
+    def __init__(self, config):
         super(Hard_loss, self).__init__()
-        self.alpha = alpha
-        self.margin = margin
-        self.criterion = torch.nn.BCELoss()
+        self.alpha = config['loss_alpha']
+        self.margin = config['loss_margin']
+        # self.criterion = torch.nn.BCELoss()
+        self.criterion = Weighted_BCE_Loss(weights=config['class_reweights'], label_smoothing=config['label_smoothing'], eps=1e-8)
 
     def forward(self, ref_scores, ref_labels, ref_attn_feat, sup_attn_feat):
         #ref_scores: [bs, T], ref_labels:[bs, T], ref_attn_feat:[bs*ncrops, T1, F], sup_attn_feat:[bs*ncrops, T2, F]

@@ -4,6 +4,7 @@ import torch.nn.init as torch_init
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 from model.modules_hard import Hard_sim_sample_generator, Hard_score_sample_generator, VideoRelation, Aggregate
 
+# 这个文件是给RTFM的
 
 def weight_init(m):
     classname = m.__class__.__name__

@@ -397,13 +397,13 @@ class I3D_Hard(nn.Module):
                         module.weight.requires_grad = True
                         module.bias.requires_grad = True
 
-    def train(self, mode=True):
-        super(I3D_Hard, self).train(mode)
-        if self.freeze_backbone:
-            self.freeze_part_model()
-        if self.freeze_bn:
-            self.freeze_batch_norm()
-        return self
+    # def train(self, mode=True):
+    #     super(I3D_Hard, self).train(mode)
+    #     if self.freeze_backbone:
+    #         self.freeze_part_model()
+    #     if self.freeze_bn:
+    #         self.freeze_batch_norm()
+    #     return self
 
     def forward(self, ref_rgb, ref_flow, normal_rgb, normal_flow, abnormal_rgb, abnormal_flow, mode='normal',
                 isTrain=True):
@@ -415,8 +415,8 @@ class I3D_Hard(nn.Module):
         inputs_rgb = inputs_rgb.view(bs*N, C, T, H, W)
         inputs_flow = inputs_flow.view(bs_f*N_f, C_f, T_f, H_f, W_f)
 
-        inputs_rgb_feat, _ = self.rgb_backbone(inputs_rgb)  # [B*N,F]
-        inputs_rgb_feat = self.GAP(inputs_rgb_feat).squeeze(-1).squeeze(-1).squeeze(-1)
+        inputs_rgb_feat, _ = self.rgb_backbone(inputs_rgb)
+        inputs_rgb_feat = self.GAP(inputs_rgb_feat).squeeze(-1).squeeze(-1).squeeze(-1) # [B*N,F]
         with torch.no_grad():
             inputs_flow_feat, _ = self.flow_backbone(inputs_flow)
             inputs_flow_feat = self.GAP(inputs_flow_feat).squeeze(-1).squeeze(-1).squeeze(-1)
@@ -437,9 +437,9 @@ class I3D_Hard(nn.Module):
             inputs_flow_feat[bs:2 * bs], inputs_rgb_feat[2 * bs:3 * bs], inputs_flow_feat[2 * bs:3 * bs]
 
         if not isTrain:
-            # ref_aggr = self.relation(ref_rgb, ref_rgb, index=0)  # 测试时直接与自身进行融合
-            # ref_aggr = self.relation_two(ref_aggr, ref_aggr, index=0)
-            ref_scores = self.Softmax(self.f_classifier(ref_rgb))[:,:,1]   #[bs, N]
+            ref_aggr = self.relation(ref_rgb, ref_rgb, index=0)  # 测试时直接与自身进行融合
+            ref_aggr = self.relation_two(ref_aggr, ref_aggr, index=0)
+            ref_scores = self.Softmax(self.f_classifier(ref_aggr))[:,:,1]   #[bs, N]
             return ref_scores
 
         supn_hard_feat, supn_conf_feat = self.hard_sim_sampler(normal_rgb)
